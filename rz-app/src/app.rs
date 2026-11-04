@@ -31,7 +31,6 @@ pub struct App {
     pub photo_dav3_black: Option<photo::Photo>,
     pub photo_dav3_white: Option<photo::Photo>,
     pub photo_dav2_black: Option<photo::Photo>,
-    pub photo_dav2_white: Option<photo::Photo>,
     pub cfg: Config,
     pub page: usize,
     toasts: Vec<Toast>,
@@ -79,13 +78,6 @@ impl App {
             photo::CROP_DAV2PRO,
             photo::HOTSPOTS_DAV2PRO,
         );
-        let photo_dav2_white = photo::load(
-            ctx,
-            include_bytes!("../assets/device_dav2pro_white.png"),
-            "device_dav2pro_white",
-            photo::CROP_DAV2PRO,
-            photo::HOTSPOTS_DAV2PRO,
-        );
         App {
             ty,
             backend,
@@ -93,7 +85,6 @@ impl App {
             photo_dav3_black,
             photo_dav3_white,
             photo_dav2_black,
-            photo_dav2_white,
             page: cfg.last_page.min(6),
             toasts: Vec::new(),
             connected: false,
@@ -215,7 +206,8 @@ impl App {
         let st = self.state.as_ref()?;
         let white = st.edition == 0x80;
         let (black, white_photo) = match st.pid {
-            0x007C | 0x007D => (&self.photo_dav2_black, &self.photo_dav2_white),
+            // DeathAdder V2 Pro 目前只有官方黑色渲染；白色版先回退黑色，避免用错素材
+            0x007C | 0x007D => (&self.photo_dav2_black, &self.photo_dav2_black),
             _ => (&self.photo_dav3_black, &self.photo_dav3_white),
         };
         if white {

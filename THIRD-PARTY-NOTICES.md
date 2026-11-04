@@ -8,7 +8,6 @@
 | `rz-app/assets/device_dav3pro.png` | Razer Inc. 的产品渲染图（黑色） |
 | `rz-app/assets/device_dav3pro_white.png` | Razer Inc. 的产品渲染图（白色） |
 | `rz-app/assets/device_dav2pro.png` | Razer Inc. 的产品渲染图（黑色） |
-| `rz-app/assets/device_dav2pro_white.png` | Razer Inc. 的产品渲染图（白色） |
 
 这些素材仅用于**在界面中识别对应的硬件型号**，版权归 Razer Inc. 所有。
 本项目与 Razer Inc. 无任何隶属关系，也未获得其背书。如需商业分发，请自行替换为自有素材。

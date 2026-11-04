@@ -166,7 +166,7 @@ razer-driver/
 1. 素材 `assets/device_dav3pro.png`（黑）与 `assets/device_dav3pro_white.png`（白）——
    Razer 官方顶视渲染，编译期 `include_bytes!` 打进 exe；**用哪个由设备上报的 `editionId` 决定**
    （`0x00/0x86` 的 `args[1]`：`0x00` 黑色 / `0x80` 白色，与 Synapse 日志里的 `"editionId":128` 一致）；
-   DeathAdder V2 Pro 使用 `device_dav2pro.png` / `device_dav2pro_white.png`，按 PID `007C/007D` 选择，
+   DeathAdder V2 Pro 使用 `device_dav2pro.png`（目前仅有官方黑色渲染，白色版回退黑色），按 PID `007C/007D` 选择，
    裁剪框与 5 个按键热点在 `photo.rs` 中按型号独立定义；
 2. **白底抠图**用「从四边泛洪」而不是全局阈值 —— 只删掉与画布边缘连通的白色区域，
    机身内部的高光不会被戳出洞；边缘再做一次按亮度分级的羽化，消掉白边锯齿；
