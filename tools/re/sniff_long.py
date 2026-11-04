@@ -6,13 +6,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import razer as R
 
 DURATION = float(sys.argv[1]) if len(sys.argv) > 1 else 180.0
+WANT_PID = int(sys.argv[2], 16) if len(sys.argv) > 2 else None
 
-p = [x for x in R.enumerate_hid() if (R.info(x) or {}).get('feature') == 91][0]
+
+def pick_control():
+    candidates = []
+    for path in R.enumerate_hid():
+        info = R.info(path)
+        if not info or info.get('feature') != 91 or info.get('vid') != 0x1532:
+            continue
+        if WANT_PID is not None and info['pid'] != WANT_PID:
+            continue
+        # Mouse Dock 也暴露 91 字节接口，默认跳过，避免嗅探到错误的设备。
+        if info['pid'] == 0x007E or 'dock' in info['product'].lower():
+            continue
+        candidates.append((path, info))
+    return candidates[0] if candidates else (None, None)
+
+
+p, info = pick_control()
+if not p:
+    sys.exit('control interface not found (usage: sniff_long.py [seconds] [pid-hex])')
 h = R.k32.CreateFileW(p, 0x40000000, 3, None, 3, 0, None)
 if h in (None, R.INVALID):
     sys.exit('open failed')
 
-print('sniff %.0fs on %s' % (DURATION, p.split('#')[-1][:12]), flush=True)
+print('sniff %.0fs on %04X %s (%s)' % (
+    DURATION, info['pid'], info['product'], p.split('#')[-1][:12]), flush=True)
 seen = set()
 t0 = time.time()
 last_beat = 0.0

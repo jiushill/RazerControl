@@ -35,7 +35,9 @@ pub fn spec_for(pid: u16) -> DeviceSpec {
         0x00B8 => ("DeathAdder V3", 30000, 1000, false, false, false),
         0x00AA => ("Viper V2 Pro", 30000, 1000, false, true, true),
         0x0099 => ("Viper Ultimate", 20000, 1000, true, true, true),
-        0x007C => ("DeathAdder V2 Pro", 20000, 1000, true, true, true),
+        0x007C => ("DeathAdder V2 Pro (有线)", 20000, 1000, true, true, false),
+        0x007D => ("DeathAdder V2 Pro", 20000, 1000, true, true, true),
+        0x007E => ("Razer Mouse Dock", 0, 0, false, false, false),
         0x007A => ("DeathAdder V2", 20000, 1000, true, false, false),
         0x0084 => ("Basilisk V2", 20000, 1000, true, false, false),
         0x008A => ("Basilisk Ultimate", 20000, 1000, true, true, true),
@@ -54,6 +56,29 @@ pub fn spec_for(pid: u16) -> DeviceSpec {
         has_battery: batt,
         stage_slots: 5,
     }
+}
+
+/// 也暴露 91 字节控制接口、但不是鼠标的配件（例如 DeathAdder V2 Pro 的 Mouse Dock）。
+pub fn is_accessory(pid: u16) -> bool {
+    matches!(pid, 0x007E)
+}
+
+/// 多设备同时在线时的选择优先级：有线鼠标优先，同型号再按 PID 区分。
+pub fn selection_priority(pid: u16) -> u8 {
+    match pid {
+        0x00B6 | 0x00B8 => 0,
+        0x007C => 1,
+        0x00B7 | 0x00B9 => 2,
+        0x007D => 3,
+        0x00AA | 0x0099 => 4,
+        _ => 5,
+    }
+}
+
+/// DeathAdder V2 Pro 的灯效走「单 LED（LOGO 0x04）+ 扩展亮度」协议，
+/// 与项目早期为 Chroma 设备写的 0x0F/0x83 路径不同。
+pub fn uses_logo_lighting(pid: u16) -> bool {
+    matches!(pid, 0x007C | 0x007D)
 }
 
 /// 该型号是否支持 0x0B 校准接口（实测：DeathAdder V3 系列可用）

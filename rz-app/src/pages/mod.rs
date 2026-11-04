@@ -376,7 +376,7 @@ pub fn dashboard(app: &mut App, ui: &mut Ui) {
 
 // ---------------- DPI ----------------
 pub fn dpi(app: &mut App, ui: &mut Ui) {
-    page_head(app, ui, "DPI", "五段灵敏度阶梯，直接写入设备存储");
+    page_head(app, ui, "DPI", "可调灵敏度阶梯，直接写入设备存储");
     let st = app.state.clone().unwrap_or_default();
     let max_dpi = if st.max_dpi == 0 { 30000.0 } else { st.max_dpi as f32 };
 
@@ -474,7 +474,11 @@ pub fn dpi(app: &mut App, ui: &mut Ui) {
                     app.backend.req(Req::SetStages(vals));
                 }
                 if widgets::ghost_button(ui, &app.ty, "恢复默认").clicked() {
-                    app.backend.req(Req::SetStages(vec![400, 800, 1600, 3200, 6400]));
+                    let defaults = [400u16, 800, 1600, 3200, 6400];
+                    let n = st.profile.stages.len().max(1);
+                    app.backend.req(Req::SetStages(
+                        defaults.iter().take(n).copied().collect(),
+                    ));
                 }
             });
         });
@@ -715,7 +719,7 @@ pub fn calibration(app: &mut App, ui: &mut Ui) {
             app,
             Icon::Calib,
             "该型号未提供校准接口",
-            "只有 DeathAdder V3 系列（00B6/00B7/00B8/00B9）实测支持 0x0B 校准写入",
+            "当前型号未验证 0x0B 校准写入；目前只有 DeathAdder V3 系列（00B6/00B7/00B8/00B9）实测可用。",
         );
         ui.add_space(12.0);
         theme::card(ui, CardStyle::new(), |ui| {
@@ -1095,8 +1099,8 @@ pub fn lighting(app: &mut App, ui: &mut Ui) {
             ui,
             app,
             Icon::Light,
-            "该设备没有背光模块",
-            "DeathAdder V3 Pro 为纯性能取向设计，无 RGB 灯区；本页在支持 Chroma 的设备上会自动启用。",
+            "该设备没有可用的背光模块",
+            "当前型号未提供可用的 Chroma 灯效接口；支持灯效的型号会自动启用本页。",
         );
         ui.add_space(12.0);
         theme::card(ui, CardStyle::new(), |ui| {
@@ -1107,9 +1111,10 @@ pub fn lighting(app: &mut App, ui: &mut Ui) {
             );
             ui.add_space(6.0);
             for line in [
-                "亮度：class 0x0F / id 0x83 读取，0x03 写入（0-255 映射 0-100%）",
-                "效果：class 0x0F / id 0x02 下发静态色（呼吸 / 光谱可扩展）",
-                "自动探测：灯光命令返回 0x05 时判定设备无灯区",
+                "经典 Chroma：亮度 0x0F/0x83 读、0x0F/0x03 写，静态色 0x0F/0x02",
+                "DeathAdder V2 Pro：亮度 0x0F/0x84 读、0x0F/0x04 写（LOGO LED 0x04）",
+                "V2 Pro 静态色：0x0F/0x02，args = [01,04,01,00,00,01,R,G,B]",
+                "自动探测：对应亮度 getter 成功时才判定设备有灯区",
             ] {
                 ui.label(
                     egui::RichText::new(format!("· {}", line))

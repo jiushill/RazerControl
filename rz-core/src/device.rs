@@ -6,7 +6,6 @@ use crate::proto::{self, Cmd, Reply};
 use std::fmt;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-
 #[derive(Debug, Clone)]
 pub enum DeviceError {
     Open,
@@ -29,6 +28,44 @@ impl fmt::Display for DeviceError {
 }
 
 pub type Result<T> = std::result::Result<T, DeviceError>;
+
+/// 枚举并选择一台可用的雷蛇鼠标。
+///
+/// 鼠标底座（如 DeathAdder V2 Pro 的 Mouse Dock，PID 0x007E）也会暴露
+/// 91 字节控制接口，而且会对轮询率读取应答，因此必须显式跳过配件，
+/// 并以 DPI 能力作为「这是鼠标」的主要判据。
+pub fn pick_device() -> Option<Device> {
+    let mut infos: Vec<HidInfo> = crate::hid::enumerate_razer()
+        .into_iter()
+        .filter(|i| i.is_control_interface())
+        .filter(|i| !crate::devices::is_accessory(i.product_id))
+        .filter(|i| !i.product.to_ascii_lowercase().contains("dock"))
+        .collect();
+    infos.sort_by_key(|i| crate::devices::selection_priority(i.product_id));
+
+    let mut fallback: Option<Device> = None;
+    for info in infos {
+        if let Ok(dev) = Device::open(&info) {
+            if dev.caps.dpi {
+                return Some(dev);
+            }
+            // 无线鼠标休眠时所有能力探测都会超时；保留句柄，交给后台线程显示
+            // 「休眠中」并持续探活，而不是直接判定设备不存在。
+            if fallback.is_none() {
+                fallback = Some(dev);
+            }
+        }
+    }
+    fallback
+}
+
+fn raw_to_percent(raw: u8) -> u8 {
+    (((raw as u32) * 100 + 127) / 255).min(100) as u8
+}
+
+fn percent_to_raw(percent: u8) -> u8 {
+    ((percent.min(100) as u32 * 255 + 50) / 100) as u8
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Caps {
@@ -99,7 +136,10 @@ pub struct Device {
     pub caps: Caps,
 }
 
-const IO_TIMEOUT: Duration = Duration::from_millis(900);
+// Synapse 和本程序共用同一块 Feature Report 缓冲区，应答可能被对方的帧覆盖。
+// 用较短的超时 + 重发，比单次 900ms 干等更能适应这种竞争。
+const IO_TIMEOUT: Duration = Duration::from_millis(300);
+const IO_ATTEMPTS: usize = 3;
 const POLL_INTERVAL: Duration = Duration::from_micros(1200);
 
 impl Device {
@@ -132,41 +172,44 @@ impl Device {
         self.tid
     }
 
-    /// 发送一帧并等待设备应答（自动处理 busy 轮询与 stale 帧）。
+    /// 发送一帧并等待设备应答（自动处理 busy 轮询、stale 帧与丢帧重发）。
     pub fn xfer(&mut self, cmd: Cmd, args: &[u8], data_size: u8) -> Result<Reply> {
         let tid = self.next_tid();
         let frame = proto::build(tid, cmd.0, cmd.1, args, data_size);
-        if !self.hid.set_feature(&frame) {
-            return Err(DeviceError::Io);
-        }
-        let start = Instant::now();
-        let mut raw = [0u8; proto::REPORT_LEN];
-        loop {
-            if start.elapsed() > IO_TIMEOUT {
-                return Err(DeviceError::Timeout);
-            }
-            if !self.hid.get_feature(&mut raw) {
+        for _attempt in 0..IO_ATTEMPTS {
+            if !self.hid.set_feature(&frame) {
                 return Err(DeviceError::Io);
             }
-            let reply = Reply::parse(&raw);
-            if reply.tid != tid {
-                sleep(POLL_INTERVAL);
-                continue;
-            }
-            match reply.status {
-                proto::STATUS_BUSY => {
+            let start = Instant::now();
+            let mut raw = [0u8; proto::REPORT_LEN];
+            loop {
+                if start.elapsed() > IO_TIMEOUT {
+                    break;
+                }
+                if !self.hid.get_feature(&mut raw) {
+                    return Err(DeviceError::Io);
+                }
+                let reply = Reply::parse(&raw);
+                if reply.tid != tid {
                     sleep(POLL_INTERVAL);
                     continue;
                 }
-                proto::STATUS_NEW => {
-                    sleep(POLL_INTERVAL);
-                    continue;
+                match reply.status {
+                    proto::STATUS_BUSY => {
+                        sleep(POLL_INTERVAL);
+                        continue;
+                    }
+                    proto::STATUS_NEW => {
+                        sleep(POLL_INTERVAL);
+                        continue;
+                    }
+                    proto::STATUS_SUCCESS => return Ok(reply),
+                    proto::STATUS_NOT_SUPPORTED => return Err(DeviceError::Unsupported),
+                    s => return Err(DeviceError::Status(s)),
                 }
-                proto::STATUS_SUCCESS => return Ok(reply),
-                proto::STATUS_NOT_SUPPORTED => return Err(DeviceError::Unsupported),
-                s => return Err(DeviceError::Status(s)),
             }
         }
+        Err(DeviceError::Timeout)
     }
 
     fn query(&mut self, cmd: Cmd, size: u8) -> Result<Reply> {
@@ -192,8 +235,10 @@ impl Device {
         if self.query(Cmd::DPI_STAGES_GET, 1).is_ok() {
             caps.dpi_stages = true;
         }
-        if self.query(Cmd::POLL_RATE_GET, 1).is_ok() {
-            caps.poll_rate = true;
+        if let Ok(r) = self.query(Cmd::POLL_RATE_GET, 1) {
+            if poll_code_to_hz(r.arg(0)).is_some() {
+                caps.poll_rate = true;
+            }
         }
         if self.query(Cmd::BATTERY_GET, 2).is_ok() {
             caps.battery = true;
@@ -207,17 +252,25 @@ impl Device {
         if self.query(Cmd::LOW_BATTERY_GET, 1).is_ok() {
             caps.low_battery = true;
         }
-        if self.query(Cmd::LED_BRIGHTNESS_GET, 1).is_ok() {
-            caps.lighting = true;
-        }
+        // 灯效有两种协议：V2 Pro 用 LOGO LED + 扩展亮度，其余 Chroma 设备沿用旧路径。
+        caps.lighting = if !self.spec.has_rgb {
+            false
+        } else if crate::devices::uses_logo_lighting(self.info.product_id) {
+            self.xfer(Cmd::LED_BRIGHTNESS_EXT_GET, &[0x01, 0x04, 0x00], 3)
+                .is_ok()
+        } else {
+            self.query(Cmd::LED_BRIGHTNESS_GET, 1).is_ok()
+        };
         // 0x0F 那套在 V3 Pro 上不支持；真正的校准是 class 0x0B（按型号判定）
         caps.calibration = crate::devices::supports_calibration(self.info.product_id);
         // 连接方式以型号为准：模式字节在休眠/唤醒时会漂（0x03 ↔ 0x00），不能单独依赖
         let mode = self.query(Cmd::DEVICE_MODE, 2).map(|r| r.arg(0)).unwrap_or(0);
-        caps.wireless = self.spec.wireless || mode == 0x03;
-        if !self.spec.has_rgb {
-            caps.lighting = false;
-        }
+        let known_model = self.spec.family != "Razer 鼠标";
+        caps.wireless = if known_model {
+            self.spec.wireless
+        } else {
+            mode == 0x03
+        };
         self.caps = caps;
     }
 
@@ -371,20 +424,42 @@ impl Device {
     // ---------- 灯效（RGB 设备） ----------
 
     pub fn brightness(&mut self) -> Result<u8> {
-        let r = self.query(Cmd::LED_BRIGHTNESS_GET, 1)?;
-        Ok(r.arg(0))
+        if crate::devices::uses_logo_lighting(self.info.product_id) {
+            // args = [variable_storage, LOGO_LED, value]
+            let r = self.xfer(Cmd::LED_BRIGHTNESS_EXT_GET, &[0x01, 0x04, 0x00], 3)?;
+            Ok(raw_to_percent(r.arg(2)))
+        } else if self.spec.has_rgb {
+            let r = self.query(Cmd::LED_BRIGHTNESS_GET, 1)?;
+            Ok(raw_to_percent(r.arg(0)))
+        } else {
+            Err(DeviceError::Unsupported)
+        }
     }
 
     pub fn set_brightness(&mut self, value: u8) -> Result<()> {
-        let v = value.clamp(0, 100);
-        let raw = ((v as u32 * 255 + 50) / 100) as u8;
-        self.write(Cmd::LED_BRIGHTNESS_SET, &[raw]).map(|_| ())
+        let raw = percent_to_raw(value);
+        if crate::devices::uses_logo_lighting(self.info.product_id) {
+            self.xfer(Cmd::LED_BRIGHTNESS_EXT_SET, &[0x01, 0x04, raw], 3)
+                .map(|_| ())
+        } else if self.spec.has_rgb {
+            self.write(Cmd::LED_BRIGHTNESS_SET, &[raw]).map(|_| ())
+        } else {
+            Err(DeviceError::Unsupported)
+        }
     }
 
-    /// 静态单色（class 0x0F / id 0x02，9 字节 arg）
+    /// 静态单色（class 0x0F / id 0x02）
     pub fn set_static_color(&mut self, r: u8, g: u8, b: u8) -> Result<()> {
-        let args = [0x01, 0x01, 0x01, r, g, b, 0x00, 0x00, 0x00];
-        self.write(Cmd::LED_COLOR_SET, &args).map(|_| ())
+        if crate::devices::uses_logo_lighting(self.info.product_id) {
+            // OpenRazer: extended matrix static effect (VARSTORE, LOGO_LED, STATIC, ?, ?, 0x01, RGB)
+            let args = [0x01, 0x04, 0x01, 0x00, 0x00, 0x01, r, g, b];
+            self.xfer(Cmd::LED_EFFECT_SET, &args, 9).map(|_| ())
+        } else if self.spec.has_rgb {
+            let args = [0x01, 0x01, 0x01, r, g, b, 0x00, 0x00, 0x00];
+            self.write(Cmd::LED_COLOR_SET, &args).map(|_| ())
+        } else {
+            Err(DeviceError::Unsupported)
+        }
     }
 
     // ---------- 校准（class 0x0B，实测） ----------
@@ -446,7 +521,7 @@ impl Device {
         if let Ok(s) = self.serial() {
             st.serial = s;
         }
-        st.wireless = self.caps.wireless;
+        st.wireless = self.caps.wireless || self.spec.wireless;
         if self.caps.dpi {
             if let Ok(d) = self.dpi() {
                 st.dpi = d;

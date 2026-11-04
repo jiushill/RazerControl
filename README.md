@@ -3,7 +3,8 @@
 > 从 `C:\Program Files\Razer\RazerAppEngine\app-4.0.699\RazerAppEngine.exe`（Synapse 4）逆向出设备控制协议，
 > 用 Rust 重新实现了一套**不依赖 Razer 软件**的驱动 + 原生 GPU 界面（egui，非网页）。
 >
-> 真机验证：**Razer DeathAdder V3 Pro（1532:00B7，2.4G 无线）**，固件 v2.01。
+> 真机验证：**Razer DeathAdder V3 Pro（1532:00B7，2.4G 无线）**，固件 v2.01；
+> **Razer DeathAdder V2 Pro（1532:007D 无线 / 007C 有线）**，固件 v2.05。
 
 ![概览](docs/01-dashboard.png)
 
@@ -79,6 +80,8 @@ report id 0x00 + 90 字节负载
 | 低电阈值 | `0x07/0x81` 读、`0x07/0x01` 写 | 1 字节 0..255 ↔ 0..100% |
 | 亮度 | `0x0F/0x83` 读、`0x0F/0x03` 写 | 仅 RGB 设备 |
 | 灯效 | `0x0F/0x02` 写 | 静态色 `[01][01][01][r][g][b][00][00][00]` |
+| 亮度（V2 Pro） | `0x0F/0x84` 读、`0x0F/0x04` 写 | args `[01][04][value]`，0..255 ↔ 0..100% |
+| 灯效（V2 Pro） | `0x0F/0x02` 写 | 静态色 `[01][04][01][00][00][01][r][g][b]`，LED `0x04` = LOGO |
 | 校准 · 追踪距离 | `0x0B/0x0B` 写 | `[00,04,01,v]` size 4，v=0/1/2 → 低/中等/高（写 3 被拒） |
 | 校准 · 非对称中止 | `0x0B/0x0B` 写 | `[00,04,04,v]` size 4，v=0/1 |
 | 校准 · 抬升/着陆 | `0x0B/0x05` 写 | `[00,04,lift,land,0×6]` size 10；抬升 1..26、着陆 1..25；**仅在非对称中止开启时接受** |
@@ -163,6 +166,8 @@ razer-driver/
 1. 素材 `assets/device_dav3pro.png`（黑）与 `assets/device_dav3pro_white.png`（白）——
    Razer 官方顶视渲染，编译期 `include_bytes!` 打进 exe；**用哪个由设备上报的 `editionId` 决定**
    （`0x00/0x86` 的 `args[1]`：`0x00` 黑色 / `0x80` 白色，与 Synapse 日志里的 `"editionId":128` 一致）；
+   DeathAdder V2 Pro 使用 `device_dav2pro.png` / `device_dav2pro_white.png`，按 PID `007C/007D` 选择，
+   裁剪框与 5 个按键热点在 `photo.rs` 中按型号独立定义；
 2. **白底抠图**用「从四边泛洪」而不是全局阈值 —— 只删掉与画布边缘连通的白色区域，
    机身内部的高光不会被戳出洞；边缘再做一次按亮度分级的羽化，消掉白边锯齿；
 3. 黑色机身在深色主题里会「糊」进背景，所以对非透明像素做 `gamma 0.80` 提亮；
@@ -234,8 +239,16 @@ rzctl raw 04 86 00 1        # 任意命令探测：class id hex-args size
 
 ## 6. 已验证 / 未覆盖
 
-已实测通过（DeathAdder V3 Pro）：
+已实测通过（DeathAdder V3 Pro / V2 Pro）：
 
+* **DeathAdder V2 Pro（007D 无线，固件 v2.05）**：DPI 800、4 段阶梯 `[400, 800, 1000, 1300]`、
+  1000 Hz、电量 29%、休眠 300 s、低电阈值 5% 全部正确读回；LOGO 亮度 `0 → 40 → 0` 写入并回读一致，
+  静态色 `#00FF00` 下发成功；
+* **Mouse Dock（007E）** 也暴露 91 字节控制接口，程序按 PID / 产品名跳过，不会被误选成鼠标；
+* **硬件 DPI 键切换活动段**：后台清醒时每 250ms 读一次实时 DPI，DPI 变化时立即补读阶梯表，
+  界面在 0.6 秒内同步实时 DPI 和活动段（实测用 `rzctl stage 1/3` 模拟，600ms 后界面已更新）。
+  Synapse 看起来更快，是因为它注册了鼠标的 `hardwareEventReportID`（report 5）主动事件；
+  本程序只读 Feature Report，250ms 轮询是当前实现下的折中。
 * GUI 点击「激活」→ 设备活动段与实时 DPI 同步改变（3200 DPI，读到 3200）
 * 拖动段内滑杆 → 阶梯表真实写入（段 1 改为 13050 后读回 `[13050, 800, 3200, 6000, 10000]`）
 * 轮询率 125/250/500/1000 双向读写、休眠时间、低电阈值、电量与充电状态、序列号/固件
@@ -264,12 +277,19 @@ rzctl raw 04 86 00 1        # 任意命令探测：class id hex-args size
 
 未覆盖/限制：
 
-* **按键映射是软件层**（`WH_MOUSE_LL` + `SendInput`）——该设备 `0x02/0x8F` 返回 `0x05`，
+* **按键映射是软件层**（`WH_MOUSE_LL` + `SendInput`）——V3 Pro / V2 Pro 的 `0x02/0x8F` 都返回 `0x05`，
   不支持硬件级按键重映射；这与 Synapse 的做法一致（其 asar 内同样有 `mapping_engine`）。
-* **灯效**：DeathAdder V3 Pro 无 RGB 灯区（`0x0F/*` 返回 `0x05`），代码路径保留给支持 Chroma 的设备。
+* **灯效**：DeathAdder V3 Pro 无 RGB 灯区（`0x0F/*` 返回 `0x05`）；DeathAdder V2 Pro 有单个 LOGO 灯区，
+  已按 `0x0F/0x84` + `0x0F/0x04`（亮度）和 `0x0F/0x02`（静态色）实现。
+* **V2 Pro 灯区编号**：鼠标 LOGO 是 LED `0x04`，Mouse Dock 是 LED `0x05`，两者是独立灯区。
+  程序只打开鼠标 PID `007D/007C`；若调鼠标灯效时仍看到底座变化，可用
+  `python tools/re/ledctl.py bright mouse 4 255` / `python tools/re/ledctl.py bright dock 5 255`
+  手动确认实际映射（`ledctl.py` 还支持 `read` / `off` / `color`）。
+* **校准**：V2 Pro 的 `0x0B` 校准接口未验证，界面保持禁用；只有 DeathAdder V3 系列实测可用。
 * 与 Synapse 同时运行通常无冲突（各自轮询、按 tid 过滤应答），但两者会争抢同一 Feature Report 缓冲区，
-  高频刷新时可能出现个别超时，重试即可。
-* 无线鼠标休眠（默认 5 分钟）后**所有命令都会超时**，鼠标本体不再应答；动一下鼠标即恢复。休眠/重枚举会让 HID 句柄失效，因此连续 3 次无应答后程序会丢弃句柄、重新枚举并探测（轮询改用单条 ping，唤醒后 3–6 秒内自动恢复）。
+  单次应答可能被对方覆盖。底层 `xfer` 现在按 300ms × 3 次重发；只有连续 2 次读不到
+  DPI / 阶梯表才标记休眠，连续 5 次失败才丢弃句柄重连，避免把偶发超时误报成休眠。
+* 无线鼠标休眠（默认 5 分钟）后所有命令都会超时，鼠标本体不再应答；动一下鼠标即恢复。
   程序会保持最后一次有效读数并在界面上标注休眠，唤醒后自动刷新。
 * 仅测过 USB/HID 的 Protocol 1.0/2.5（90+1 字节）。BLE（`protocol30/40`）与 65 字节老协议未实现。
 
@@ -287,6 +307,8 @@ rzctl raw 04 86 00 1        # 任意命令探测：class id hex-args size
 * **12 条踩过的坑** —— 读权限独占、busy 轮询、电量 0..255 刻度、句柄失效、
   非对称门控、白色机身抠图、无边框窗口隐藏…按这个清单排查能省一天；
 * **Roadmap** —— 灯效 / 硬件按键映射 / 板载 profile / BLE / 多设备。
+* **CI** —— [.github/workflows/ci.yml](.github/workflows/ci.yml) 在 `windows-latest` 上执行
+  `cargo check --workspace --all-targets`，并构建 `RazerControl.exe` / `rzctl.exe` 作为 artifact。
 
 ## 8. 许可
 

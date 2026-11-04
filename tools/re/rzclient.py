@@ -31,7 +31,9 @@ class Cmd(object):
     LOWBATT_SET = (0x07, 0x01)
     LED_BRIGHTNESS_GET = (0x0F, 0x83)
     LED_BRIGHTNESS_SET = (0x0F, 0x03)
-    LED_EFFECT_GET = (0x0F, 0x84)
+    LED_BRIGHTNESS_EXT_GET = (0x0F, 0x84)
+    LED_BRIGHTNESS_EXT_SET = (0x0F, 0x04)
+    LED_EFFECT_GET = (0x0F, 0x82)
     LED_EFFECT_SET = (0x0F, 0x02)
 
 
@@ -105,10 +107,27 @@ class RazerClient(object):
 
 
 def find_control():
+    """Pick the mouse control interface, not the Mouse Dock (PID 0x007E).
+
+    Both expose a 91-byte feature report; the dock also answers some basic
+    getters, so prefer a device that actually answers DPI GET.
+    """
+    candidates = []
     for p in R.enumerate_hid():
         i = R.info(p)
-        if i and i['vid'] == 0x1532 and i['feature'] == 91:
+        if not i or i['vid'] != 0x1532 or i['feature'] != 91:
+            continue
+        if i['pid'] == 0x007E or 'dock' in i['product'].lower():
+            continue
+        candidates.append((p, i))
+    for p, i in candidates:
+        c = RazerClient(p, timeout=0.4)
+        frame, err = c.get(Cmd.DPI_GET, 7)
+        c.close()
+        if frame is not None and err is None:
             return p, i
+    if candidates:
+        return candidates[0]
     return None, None
 
 
@@ -116,6 +135,7 @@ if __name__ == '__main__':
     path, info = find_control()
     print('control:', info['product'], '%04X:%04X' % (info['vid'], info['pid']), 'fwver=0x%04X' % info['ver'])
     c = RazerClient(path, verbose='-v' in __import__('sys').argv)
+    v2pro = info['pid'] in (0x007C, 0x007D)
     for name, cmd, size in [
             ('firmware', Cmd.FIRMWARE, 2),
             ('serial', Cmd.SERIAL, 22),
@@ -129,9 +149,17 @@ if __name__ == '__main__':
             ('low_batt', Cmd.LOWBATT_GET, 1),
             ('brightness', Cmd.LED_BRIGHTNESS_GET, 1),
             ('led_effect', Cmd.LED_EFFECT_GET, 2)]:
-        frame, err = c.get(cmd, size)
+        if v2pro and name == 'brightness':
+            frame, err = c.xfer(0x0F, 0x84, bytes([0x01, 0x04, 0x00]), 3)
+            shown = 3
+        elif v2pro and name == 'led_effect':
+            frame, err = c.xfer(0x0F, 0x82, bytes([0x01, 0x04]), 2)
+            shown = 2
+        else:
+            frame, err = c.get(cmd, size)
+            shown = size
         if frame is None:
             print('%-13s FAIL %s' % (name, err))
         else:
-            print('%-13s %-12s args=%s' % (name, err or 'ok', frame[8:8 + size].hex()))
+            print('%-13s %-12s args=%s' % (name, err or 'ok', frame[8:8 + shown].hex()))
     c.close()

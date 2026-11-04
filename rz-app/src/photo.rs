@@ -7,16 +7,28 @@ use egui::{
     Color32, ColorImage, Context, Pos2, Rect, Rounding, Stroke, TextureHandle, TextureOptions, Vec2,
 };
 
-/// 全图归一化裁剪框：[x0, y0, x1, y1]，只保留鼠标本体
-pub const CROP: [f32; 4] = [0.250, 0.055, 0.752, 0.910];
+/// DeathAdder V3 Pro 素材的全图归一化裁剪框：[x0, y0, x1, y1]
+pub const CROP_DAV3PRO: [f32; 4] = [0.250, 0.055, 0.752, 0.910];
 
-/// 5 个按键中心点（相对整张图 0..1，顺序：左键 / 右键 / 中键 / 后退 / 前进）
-pub const HOTSPOTS: [[f32; 2]; 5] = [
+/// DeathAdder V3 Pro 的 5 个按键中心点（左键 / 右键 / 中键 / 后退 / 前进）
+pub const HOTSPOTS_DAV3PRO: [[f32; 2]; 5] = [
     [0.394, 0.258],
     [0.606, 0.258],
     [0.494, 0.302],
     [0.352, 0.338],
     [0.352, 0.452],
+];
+
+/// DeathAdder V2 Pro 素材（750×420 顶视渲染）的裁剪框
+pub const CROP_DAV2PRO: [f32; 4] = [0.355, 0.110, 0.650, 0.918];
+
+/// DeathAdder V2 Pro 的 5 个按键中心点（左键 / 右键 / 中键 / 后退 / 前进）
+pub const HOTSPOTS_DAV2PRO: [[f32; 2]; 5] = [
+    [0.447, 0.226],
+    [0.560, 0.214],
+    [0.495, 0.238],
+    [0.408, 0.387],
+    [0.411, 0.452],
 ];
 
 pub const BUTTON_NAMES: [&str; 5] = ["左键", "右键", "中键", "后退", "前进"];
@@ -25,6 +37,8 @@ pub struct Photo {
     pub tex: TextureHandle,
     /// 裁剪区域的宽高比
     pub aspect: f32,
+    pub crop: [f32; 4],
+    pub hotspots: [[f32; 2]; 5],
 }
 
 fn is_bg(r: u8, g: u8, b: u8) -> bool {
@@ -122,10 +136,16 @@ fn key_out_background(px: &mut [u8], w: usize, h: usize) {
 
 /// 是否有该 PID 对应的官方图素材
 pub fn has_photo_for(pid: u16) -> bool {
-    matches!(pid, 0x00B6 | 0x00B7 | 0x00B8 | 0x00B9)
+    matches!(pid, 0x00B6 | 0x00B7 | 0x00B8 | 0x00B9 | 0x007C | 0x007D)
 }
 
-pub fn load(ctx: &Context, bytes: &[u8], key: &str) -> Option<Photo> {
+pub fn load(
+    ctx: &Context,
+    bytes: &[u8],
+    key: &str,
+    crop: [f32; 4],
+    hotspots: [[f32; 2]; 5],
+) -> Option<Photo> {
     let img = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (w0, h0) = img.dimensions();
     let img = if w0 > 700 || h0 > 700 {
@@ -154,13 +174,18 @@ pub fn load(ctx: &Context, bytes: &[u8], key: &str) -> Option<Photo> {
     }
     let color = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
     let tex = ctx.load_texture(key, color, TextureOptions::LINEAR);
-    let aspect = ((CROP[2] - CROP[0]) * w as f32) / ((CROP[3] - CROP[1]) * h as f32);
-    Some(Photo { tex, aspect })
+    let aspect = ((crop[2] - crop[0]) * w as f32) / ((crop[3] - crop[1]) * h as f32);
+    Some(Photo {
+        tex,
+        aspect,
+        crop,
+        hotspots,
+    })
 }
 
-fn to_screen(rect: Rect, p: [f32; 2]) -> Pos2 {
-    let fx = (p[0] - CROP[0]) / (CROP[2] - CROP[0]);
-    let fy = (p[1] - CROP[1]) / (CROP[3] - CROP[1]);
+fn to_screen(rect: Rect, p: [f32; 2], crop: [f32; 4]) -> Pos2 {
+    let fx = (p[0] - crop[0]) / (crop[2] - crop[0]);
+    let fy = (p[1] - crop[1]) / (crop[3] - crop[1]);
     Pos2::new(
         rect.left() + fx * rect.width(),
         rect.top() + fy * rect.height(),
@@ -179,7 +204,10 @@ pub fn draw(
     let height = width / photo.aspect;
     let rect = Rect::from_center_size(area.center(), Vec2::new(width, height));
 
-    let uv = Rect::from_min_max(Pos2::new(CROP[0], CROP[1]), Pos2::new(CROP[2], CROP[3]));
+    let uv = Rect::from_min_max(
+        Pos2::new(photo.crop[0], photo.crop[1]),
+        Pos2::new(photo.crop[2], photo.crop[3]),
+    );
 
     // 投影（同一纹理按 alpha 叠加，形成贴合轮廓的柔和阴影）
     for (dy, a) in [(11.0f32, 34u8), (7.0, 62), (3.5, 88)] {
@@ -194,8 +222,8 @@ pub fn draw(
 
     let semi = egui::FontFamily::Name("semi".into());
     let mut hits = [Rect::NOTHING; 5];
-    for (i, c) in HOTSPOTS.iter().enumerate() {
-        let center = to_screen(rect, *c);
+    for (i, c) in photo.hotspots.iter().enumerate() {
+        let center = to_screen(rect, *c, photo.crop);
         let hit = Rect::from_center_size(center, Vec2::splat(34.0));
         hits[i] = hit;
         let active = sel == Some(i);

@@ -69,7 +69,10 @@ impl Cmd {
 
     pub const LED_BRIGHTNESS_GET: Cmd = Cmd(0x0F, 0x83);
     pub const LED_BRIGHTNESS_SET: Cmd = Cmd(0x0F, 0x03);
-    pub const LED_EFFECT_GET: Cmd = Cmd(0x0F, 0x84);
+    /// 扩展亮度（DeathAdder V2 Pro 的 LOGO LED 走这条，args = [0x01, 0x04, value]）
+    pub const LED_BRIGHTNESS_EXT_GET: Cmd = Cmd(0x0F, 0x84);
+    pub const LED_BRIGHTNESS_EXT_SET: Cmd = Cmd(0x0F, 0x04);
+    pub const LED_EFFECT_GET: Cmd = Cmd(0x0F, 0x82);
     pub const LED_EFFECT_SET: Cmd = Cmd(0x0F, 0x02);
     pub const LED_COLOR_SET: Cmd = Cmd(0x0F, 0x02);
 }

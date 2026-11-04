@@ -3,9 +3,7 @@ use rz_core::device::Device;
 use rz_core::enumerate_razer;
 
 fn pick_device() -> Option<Device> {
-    let infos = enumerate_razer();
-    let ctrl = infos.iter().find(|i| i.is_control_interface())?;
-    Device::open(ctrl).ok()
+    rz_core::pick_device()
 }
 
 fn parse_hex(s: &str) -> Vec<u8> {
@@ -77,6 +75,18 @@ fn main() {
                 let p: u8 = args.get(1).and_then(|s| s.parse().ok()).ok_or("用法: lowbatt <百分比>")?;
                 dev.set_low_battery_percent(p).map_err(|e| e.to_string())?;
                 Ok(format!("低电阈值 -> {}%  读回 {:?}", p, dev.low_battery_percent()))
+            }
+            "bright" => {
+                let p: u8 = args.get(1).and_then(|s| s.parse().ok()).ok_or("用法: bright <0-100>")?;
+                dev.set_brightness(p).map_err(|e| e.to_string())?;
+                Ok(format!("亮度 -> {}%  读回 {:?}", p, dev.brightness()))
+            }
+            "color" => {
+                let r: u8 = args.get(1).and_then(|s| s.parse().ok()).ok_or("用法: color <r> <g> <b>")?;
+                let g: u8 = args.get(2).and_then(|s| s.parse().ok()).ok_or("用法: color <r> <g> <b>")?;
+                let b: u8 = args.get(3).and_then(|s| s.parse().ok()).ok_or("用法: color <r> <g> <b>")?;
+                dev.set_static_color(r, g, b).map_err(|e| e.to_string())?;
+                Ok(format!("静态颜色 -> #{:02X}{:02X}{:02X}", r, g, b))
             }
             "stage" => {
                 let n: u8 = args.get(1).and_then(|s| s.parse().ok()).ok_or("用法: stage <段号>")?;

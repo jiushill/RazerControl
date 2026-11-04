@@ -10,6 +10,6 @@ pub mod devices;
 pub mod hid;
 pub mod proto;
 
-pub use device::{Battery, Device, DeviceError, DeviceState, DpiProfile, DpiStage};
+pub use device::{pick_device, Battery, Device, DeviceError, DeviceState, DpiProfile, DpiStage};
 pub use hid::{enumerate_razer, HidInfo};
 pub use proto::{Cmd, Reply};
