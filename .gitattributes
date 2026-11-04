@@ -1,0 +1,14 @@
+# 统一行尾，避免 Windows 上 checkout 出 CRLF 后再推回去产生"只为行尾"的 diff
+* text=auto
+
+*.rs       text eol=lf
+*.toml     text eol=lf
+*.md       text eol=lf
+*.py       text eol=lf
+*.ps1      text eol=crlf
+*.rc       text eol=crlf
+.gitignore text eol=lf
+
+*.png      binary
+*.ico      binary
+*.exe      binary
