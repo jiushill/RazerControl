@@ -1,0 +1,94 @@
+name: build
+
+run-name: 构建 ${{ github.ref_name }}
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # 打 tag 时创建 Release 需要；fork PR 会被自动降级为只读
+
+jobs:
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+
+      # build.rs 用 windres 把多尺寸图标组编进 exe；runner 默认没有它，缺了就装一个
+      - name: 准备 windres
+        shell: pwsh
+        run: |
+          $found = $null
+          foreach ($dir in @('C:\msys64\mingw64\bin', 'C:\mingw64\bin', 'C:\ProgramData\chocolatey\bin')) {
+            $exe = Join-Path $dir 'windres.exe'
+            if (Test-Path $exe) { $found = $exe; break }
+          }
+          if (-not $found) {
+            Write-Host '未找到 windres，安装 MinGW...'
+            choco install mingw --no-progress -y | Out-Null
+            $found = (Get-Command windres.exe -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $found) { throw 'windres 安装失败' }
+          Write-Host "windres: $found"
+          & $found --version | Select-Object -First 1
+          (Split-Path $found) | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: 构建 release
+        run: cargo build --release -p rz-cli -p rz-app
+
+      - name: 校验 exe 是否嵌入了图标资源
+        shell: pwsh
+        run: |
+          $exe = 'target/release/RazerControl.exe'
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          # PE 节名是 8 字节 ASCII，windres 成功时会多出 .rsrc 节
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          if ($ascii -match '\.rsrc') {
+            Write-Host "OK: .rsrc 节存在，图标资源已嵌入（$([math]::Round($bytes.Length/1MB,2)) MB）"
+          } else {
+            throw 'exe 里没有 .rsrc 节：windres 未生效，图标资源没编进去'
+          }
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/release/RazerControl.exe dist/
+          Copy-Item target/release/rzctl.exe dist/
+          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/
+          Compress-Archive -Path dist/* -DestinationPath RazerControl-windows-x64.zip -Force
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: RazerControl-windows-x64
+          path: dist/          # 直接传目录：下载后就是 exe，不会再套一层 zip
+          if-no-files-found: error
+
+      - name: 发布 Release（仅打 v* tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}"
+          RazerControl-windows-x64.zip
+          --title "RazerControl ${{ github.ref_name }}"
+          --generate-notes
