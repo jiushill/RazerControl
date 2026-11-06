@@ -1,5 +1,7 @@
 ﻿# RazerControl — 纯 Rust 的雷蛇鼠标原生驱动
 
+[![build](https://github.com/jiushill/RazerControl/actions/workflows/build.yml/badge.svg)](https://github.com/jiushill/RazerControl/actions/workflows/build.yml)
+
 > 从 `C:\Program Files\Razer\RazerAppEngine\app-4.0.699\RazerAppEngine.exe`（Synapse 4）逆向出设备控制协议，
 > 用 Rust 重新实现了一套**不依赖 Razer 软件**的驱动 + 原生 GPU 界面（egui，非网页）。
 >
@@ -214,15 +216,41 @@ Synapse 自己的日志里能直接对上（`%LOCALAPPDATA%\Razer\RazerAppEngine
 > **坑**：后台每 3 秒的局部刷新只带电量/DPI，它是从 `DeviceState::default()` 拼出来的，
 > `edition = 0` 会把读到的 `0x80` 覆盖回黑色。`merge()` 里必须显式保留 `new.edition = o.edition;`。
 
-## 5. 构建与运行
+## 5. 下载与编译
 
-需要 Rust（任意近期 stable）+ MinGW 或 MSVC 工具链。
+### 5.1 直接用现成产物（推荐）
+
+不用装 Rust：
+
+* **Release 页**：<https://github.com/jiushill/RazerControl/releases> —— 打 `v*` tag 时由 CI 自动发布
+  `RazerControl-windows-x64.zip`（含 `RazerControl.exe`、`rzctl.exe` 和文档）；
+* **Actions 产物**：<https://github.com/jiushill/RazerControl/actions/workflows/build.yml>
+  —— 每次 push/PR 都会构建，运行记录底部可下载 `RazerControl-windows-x64.zip`。
+
+解压后直接双击 `RazerControl.exe` 即可，无需安装、无需管理员权限（HID 用的是设备自带的系统驱动）。
+
+### 5.2 自己编译
+
+需要 Rust（任意近期 stable）+ MSVC 或 MinGW 工具链：
 
 ```powershell
 cd razer-driver
 cargo build --release -p rz-app     # -> target/release/RazerControl.exe
 cargo build --release -p rz-cli     # -> target/release/rzctl.exe
+cargo build --release               # 整个工作区
 ```
+
+`rz-app/build.rs` 会调用 `windres` 把多尺寸图标组编进 exe（这样任务栏/资源管理器/Alt-Tab
+各取所需尺寸，不互相拉伸）。找不到 `windres` 时只会跳过图标资源并给出 warning，
+**不影响编译**——运行时窗口图标仍由 winit 设置。
+
+> 国内网络如果卡在 `Updating crates.io index`，在项目根建 `.cargo/config.toml`：
+> ```toml
+> [source.crates-io]
+> replace-with = "rsproxy-sparse"
+> [source.rsproxy-sparse]
+> registry = "sparse+https://rsproxy.cn/index/"
+> ```
 
 命令行工具：
 
