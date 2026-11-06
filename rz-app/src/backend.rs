@@ -89,6 +89,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
     let mut lost_reported = false;
     let mut was_asleep = false;
     let mut fails: u32 = 0;
+    let mut wakes: u32 = 0;
     let mut lift_land: (u8, u8) = (15, 8);
 
     loop {
@@ -143,34 +144,32 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        // Synapse 能立即响应，是因为鼠标按下 DPI 键时会发送 hardwareEventReportID
-        // （report 5）主动事件；我们只读 Feature Report，只能把轮询压到 250ms。
-        // 阶梯表在 DPI 变化时或每 1s 读一次；单条命令失败不再直接判定休眠。
+        // 无线鼠标在静止间隙偶尔不回包是正常的，不能当成休眠。
+        // 策略：每轮只发一条命令；连续多次失败才判定休眠，恢复要连续两次成功（迟滞）。
         let interval = if was_asleep {
             Duration::from_secs(3)
         } else if fails > 0 {
-            Duration::from_secs(1)
+            Duration::from_secs(2)
         } else {
-            Duration::from_millis(250)
+            Duration::from_millis(500)
         };
         if dev.is_some() && last_poll.elapsed() > interval {
             last_poll = Instant::now();
             let mut need_reconnect = false;
             if let Some(d) = dev.as_mut() {
+                // 只发一条：DPI 读取本身就是探活，失败时不要紧接着再发第二条
                 let dpi = d.dpi().ok();
                 let mut profile = None;
-                if dpi.is_some() {
+                if let Some(v) = dpi {
                     let changed = dpi != last_dpi;
-                    if changed || last_profile_poll.elapsed() > Duration::from_millis(1000) {
+                    if changed && last_profile_poll.elapsed() > Duration::from_millis(800) {
                         profile = d.dpi_profile().ok();
                         last_profile_poll = Instant::now();
                     }
-                } else {
-                    // DPI 读失败时再用阶梯表做一次探活，避免单条命令超时误判休眠。
-                    profile = d.dpi_profile().ok();
+                    let _ = v;
                 }
-                let alive = dpi.is_some() || profile.is_some();
-                let bat = if alive && last_battery.elapsed() > Duration::from_secs(5) {
+                let alive = dpi.is_some();
+                let bat = if alive && last_battery.elapsed() > Duration::from_secs(30) {
                     last_battery = Instant::now();
                     d.battery().ok()
                 } else {
@@ -178,14 +177,22 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                 };
                 if !alive {
                     fails += 1;
-                    // 一次超时可能只是 Synapse 抢占共享缓冲区；连续 2 次才显示休眠。
-                    if fails >= 2 && !was_asleep {
+                    // 连续 5 次失败（约 5×0.9s + 退避）才认为真休眠：
+                    // 单次/双次超时多半是无线链路抖动或 Synapse 抢共享缓冲区。
+                    if fails >= 5 && !was_asleep {
                         was_asleep = true;
+                        wakes = 0;
                         let _ = tx.send(Evt::Sleeping(true));
                     }
-                    // 连续多次失败才丢弃句柄，避免把偶发超时当成设备消失。
-                    need_reconnect = fails >= 5;
+                    // 更久才丢弃句柄，避免把抖动当成设备消失
+                    need_reconnect = fails >= 12;
                 } else if was_asleep {
+                    // 迟滞：连续两次成功才认为真的醒了，避免来回跳
+                    wakes += 1;
+                    if wakes < 2 {
+                        ctx.request_repaint();
+                        continue;
+                    }
                     // 刚从休眠中醒来：重新探测能力（例如校准接口）
                     was_asleep = false;
                     fails = 0;
@@ -197,6 +204,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                     let _ = tx.send(Evt::State(Box::new(d.snapshot())));
                 } else {
                     fails = 0;
+                    wakes = 0;
                     let _ = tx.send(Evt::Sleeping(false));
                     let mut st = DeviceState::default();
                     if let Some(v) = dpi {
