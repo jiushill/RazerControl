@@ -220,3 +220,15 @@ registry = "sparse+https://rsproxy.cn/index/"
 加一种新事件类型：在 `macros.rs` 里加 `T_*` 常量 + `append()` 调用点 + 回放 `match` 分支，
 存储和 UI 各加一行即可。
 
+## 11. 协议坑：事务号只能到 0x7F
+
+`frame[1]` 是事务号。设备只接受 `0x01..0x7F`，超过 `0x7F`（即 `0x80` 及以上）会一律回
+`status=0x04`。这不是"忙"也不是"休眠"，是 tid 越界。
+
+`rz-core` 里对应 `next_tid()`：
+
+```rust
+self.tid = self.tid % 0x7F + 1;
+```
+
+排查方法：抓一次 `tid` 序列，如果失败恰好从第 128 次开始，就是这个坑。

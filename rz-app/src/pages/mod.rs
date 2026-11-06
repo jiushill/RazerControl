@@ -29,7 +29,9 @@ fn page_head(app: &App, ui: &mut Ui, title: &str, sub: &str) {
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let (txt, col) = if app.asleep {
-                ("休眠中 · 移动鼠标唤醒", WARN)
+                // 设备只是进入了低功耗（固件空闲 60s 行为），不是掉线：
+                // Synapse 在这种情况下不做任何提示，我们也只用中性色说明。
+                ("低功耗 · 移动鼠标刷新", mix(MUTED, TEXT, 0.4))
             } else if app.connected {
                 ("设备已连接", ACCENT)
             } else {

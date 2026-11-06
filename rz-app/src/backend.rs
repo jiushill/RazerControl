@@ -100,6 +100,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
     let mut was_asleep = false;
     let mut fails: u32 = 0;
     let mut wakes: u32 = 0;
+    let mut last_ok = Instant::now();
     let mut lift_land: (u8, u8) = (15, 8);
 
     loop {
@@ -161,13 +162,16 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
         } else if fails > 0 {
             Duration::from_secs(2)
         } else if UI_FOCUSED.load(Ordering::Relaxed) {
-            // 用户正盯着界面：压到 150ms，切 DPI 段后几乎立刻刷新
+            // 用户正盯着界面：150ms，切 DPI 段后几乎立刻刷新
             Duration::from_millis(150)
         } else if UI_VISIBLE.load(Ordering::Relaxed) {
-            Duration::from_millis(500)
+            // 窗口可见但没聚焦：降到 3s。Synapse 在这种状态下根本不发帧，
+            // 我们保留低频探测只是为了电量和 DPI 不会太旧。
+            Duration::from_secs(3)
         } else {
-            // 收进托盘：只保活探针，几乎不打扰设备
-            Duration::from_secs(2)
+            // 收进托盘：30s 一次孤探测。设备空闲约 63s 会进低功耗，
+            // 频繁去问只会不断撞上 0x04，没有任何收益。
+            Duration::from_secs(30)
         };
         if dev.is_some() && last_poll.elapsed() > interval {
             last_poll = Instant::now();
@@ -193,9 +197,10 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                 };
                 if !alive {
                     fails += 1;
-                    // 连续 5 次失败（约 5×0.9s + 退避）才认为真休眠：
-                    // 单次/双次超时多半是无线链路抖动或 Synapse 抢共享缓冲区。
-                    if fails >= 5 && !was_asleep {
+                    // 设备空闲约 63s 就会进入低功耗并回 0x04 —— 这不是掉线。
+                    // 只有「连续 30 秒没有任何一次成功响应」才认为真休眠，
+                    // 期间界面保持最后一次读数（与 Synapse 的观感一致）。
+                    if fails >= 5 && last_ok.elapsed() > Duration::from_secs(30) && !was_asleep {
                         was_asleep = true;
                         wakes = 0;
                         let _ = tx.send(Evt::Sleeping(true));
@@ -203,6 +208,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                     // 更久才丢弃句柄，避免把抖动当成设备消失
                     need_reconnect = fails >= 12;
                 } else if was_asleep {
+                    last_ok = Instant::now();
                     // 迟滞：连续两次成功才认为真的醒了，避免来回跳
                     wakes += 1;
                     if wakes < 2 {
@@ -221,6 +227,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                 } else {
                     fails = 0;
                     wakes = 0;
+                    last_ok = Instant::now();
                     let _ = tx.send(Evt::Sleeping(false));
                     let mut st = DeviceState::default();
                     if let Some(v) = dpi {

@@ -53,9 +53,8 @@ class RazerClient(object):
     def _build(self, cls, cid, args, size=None):
         pay = bytearray(90)
         pay[0] = STATUS_NEW
-        self.tid = (self.tid + 1) % 256
-        if self.tid == 0:
-            self.tid = 1
+        # 设备只接受 0x01..0x7F 的 tid
+        self.tid = (self.tid % 0x7F) + 1
         pay[1] = self.tid
         pay[4] = 0xFF
         pay[5] = len(args) if size is None else size

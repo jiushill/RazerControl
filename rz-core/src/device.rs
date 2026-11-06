@@ -165,10 +165,9 @@ impl Device {
     }
 
     fn next_tid(&mut self) -> u8 {
-        self.tid = self.tid.wrapping_add(1);
-        if self.tid == 0 {
-            self.tid = 1;
-        }
+        // 设备只接受 tid 0x01..0x7F：一旦发出 0x80 及以上的 tid，
+        // 后续命令会被回 status=0x04（看起来像设备休眠，其实是我们自己越界）。
+        self.tid = self.tid % 0x7F + 1;
         self.tid
     }
 

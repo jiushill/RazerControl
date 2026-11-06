@@ -195,7 +195,8 @@ impl App {
                 Evt::Toast(msg, ok) => self.toast(msg, ok, now),
                 Evt::Sleeping(v) => {
                     if v && !self.asleep {
-                        self.toast("设备休眠中 · 移动鼠标唤醒".into(), false, now);
+                        // 低功耗是设备固件的正常行为（空闲约 60s），不当成错误提示
+        let _ = now;
                     }
                     self.asleep = v;
                 }
@@ -447,7 +448,7 @@ impl App {
                     if self.connected { TEXT } else { DIM },
                 );
                 let sub = if self.asleep {
-                    "休眠中 · 移动鼠标唤醒".to_string()
+                    "低功耗 · 移动鼠标刷新".to_string()
                 } else if let Some(st) = self.state.as_ref() {
                     if st.caps.battery {
                         format!(
