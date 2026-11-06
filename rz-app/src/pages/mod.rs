@@ -1080,13 +1080,15 @@ pub fn buttons(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// 行标题：与 `photo::BUTTON_NAMES` 保持同一顺序
+/// （索引 3 = 几何靠前的侧键 = XBUTTON2 = 前进，索引 4 = 靠后 = XBUTTON1 = 后退）
 fn btn_name(i: usize) -> &'static str {
     match i {
         0 => "左键",
         1 => "右键",
         2 => "滚轮中键",
-        3 => "侧键 · 后退",
-        _ => "侧键 · 前进",
+        3 => "侧键 · 前进",
+        _ => "侧键 · 后退",
     }
 }
 

@@ -270,7 +270,7 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
         WM_MBUTTONUP => (2, false),
         WM_XBUTTONDOWN | WM_XBUTTONUP => {
             let which = (info.mouse_data >> 16) & 0xFFFF;
-            (if which == 1 { 3 } else { 4 }, msg == WM_XBUTTONDOWN)
+            (if which == 2 { 3 } else { 4 }, msg == WM_XBUTTONDOWN)
         }
         _ => return CallNextHookEx(0, code, w, l),
     };

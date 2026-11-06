@@ -10,13 +10,17 @@ use egui::{
 /// DeathAdder V3 Pro 素材的全图归一化裁剪框：[x0, y0, x1, y1]
 pub const CROP_DAV3PRO: [f32; 4] = [0.250, 0.055, 0.752, 0.910];
 
-/// DeathAdder V3 Pro 的 5 个按键中心点（左键 / 右键 / 中键 / 后退 / 前进）
+/// DeathAdder V3 Pro 的 5 个按键中心点（左键 / 右键 / 中键 / 侧键·前 / 侧键·后）
+///
+/// 侧键坐标是在 `device_dav3pro.png`（500×500）上逐像素量出来的：
+/// 按键面 x = 152..171，上键 y = 180..222、下键 y = 232..290，
+/// 取中心 (161, 201) 与 (161, 261) 再除以 500。
 pub const HOTSPOTS_DAV3PRO: [[f32; 2]; 5] = [
     [0.394, 0.258],
     [0.606, 0.258],
     [0.494, 0.302],
-    [0.352, 0.338],
-    [0.352, 0.452],
+    [0.338, 0.400],
+    [0.338, 0.520],
 ];
 
 /// DeathAdder V2 Pro 素材（750×420 顶视渲染）的裁剪框
@@ -31,7 +35,8 @@ pub const HOTSPOTS_DAV2PRO: [[f32; 2]; 5] = [
     [0.411, 0.452],
 ];
 
-pub const BUTTON_NAMES: [&str; 5] = ["左键", "右键", "中键", "后退", "前进"];
+/// 索引 3/4 对应几何上的靠前/靠后侧键；实测该型号靠前侧键发 XBUTTON2(=前进)
+pub const BUTTON_NAMES: [&str; 5] = ["左键", "右键", "中键", "前进", "后退"];
 
 pub struct Photo {
     pub tex: TextureHandle,
@@ -224,21 +229,24 @@ pub fn draw(
     let mut hits = [Rect::NOTHING; 5];
     for (i, c) in photo.hotspots.iter().enumerate() {
         let center = to_screen(rect, *c, photo.crop);
-        let hit = Rect::from_center_size(center, Vec2::splat(34.0));
+        let hit_size = if i >= 3 { 28.0 } else { 34.0 };
+        let hit = Rect::from_center_size(center, Vec2::splat(hit_size));
         hits[i] = hit;
         let active = sel == Some(i);
         let hovered = hover == Some(i);
+        // 侧键（4/5）本身很窄，圆点用大尺寸会盖到机身外，这里按比例缩小
+        let k = if i >= 3 { 0.72 } else { 1.0 };
         let r = if active {
             9.0
         } else if hovered {
             8.0
         } else {
             7.2
-        };
+        } * k;
         if active || hovered {
             painter.circle_filled(
                 center,
-                r + 7.0,
+                r + 7.0 * k,
                 crate::theme::alpha(crate::theme::ACCENT, if active { 46 } else { 22 }),
             );
         }
