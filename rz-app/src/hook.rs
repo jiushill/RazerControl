@@ -130,7 +130,11 @@ extern "system" {
     fn UnhookWindowsHookEx(hook: isize) -> i32;
     fn GetMessageW(msg: *mut Msg, hwnd: isize, min: u32, max: u32) -> i32;
     fn SendInput(count: u32, inputs: *const Input, size: i32) -> u32;
+    fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
 }
+
+const MAPVK_VK_TO_VSC: u32 = 0;
+const LLKHF_EXTENDED: u32 = 0x01;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -142,6 +146,10 @@ struct HookState {
     actions: [Action; 5],
     /// 宏快照（绑定改动时同步）
     macros: Vec<crate::macros::Macro>,
+    /// vk -> 宏序号
+    hotkeys: Vec<(u8, usize)>,
+    /// 正在等待用户按下快捷键
+    capture: bool,
     tx: Option<Sender<Req>>,
     swallowed: [bool; 5],
 }
@@ -167,6 +175,8 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
                     enabled,
                     actions,
                     macros: Vec::new(),
+                    hotkeys: Vec::new(),
+                    capture: false,
                     tx: Some(tx),
                     swallowed: [false; 5],
                 })
@@ -177,10 +187,33 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
 
 /// 同步宏列表（录制/删除后调用），供 `Action::Macro` 回放使用。
 pub fn set_macros(list: Vec<crate::macros::Macro>) {
+    let keys = crate::macros::hotkey_map(&list);
     if let Ok(mut g) = STATE.lock() {
         if let Some(s) = g.as_mut() {
             s.macros = list;
+            s.hotkeys = keys;
         }
+    }
+}
+
+/// 开始/结束「按下一个键作为快捷键」的捕获
+pub fn set_capture(on: bool) {
+    if let Ok(mut g) = STATE.lock() {
+        if let Some(s) = g.as_mut() {
+            s.capture = on;
+        }
+    }
+}
+
+static CAPTURED: std::sync::atomic::AtomicI16 = std::sync::atomic::AtomicI16::new(-1);
+
+/// 取出捕获到的按键（取走后清零）
+pub fn take_captured() -> Option<u8> {
+    let v = CAPTURED.swap(-1, Ordering::Relaxed);
+    if v >= 0 {
+        Some(v as u8)
+    } else {
+        None
     }
 }
 
@@ -281,7 +314,7 @@ fn perform_with(act: Action, tx: Option<Sender<Req>>, macros: &[crate::macros::M
             Action::Pass | Action::Disabled => {}
             Action::Macro(k) => {
                 if let Some(m) = macros.get(k as usize) {
-                    crate::macros::play(&m.events, 1.0);
+                    crate::macros::play(m, 1.0);
                 }
             }
             Action::Left => send_mouse(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),
@@ -308,13 +341,51 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
         let info = &*(l as *const KbdHookStruct);
         if info.flags & LLKHF_INJECTED == 0 {
             use crate::macros as m;
-            match w as u32 {
-                WM_KEYDOWN | WM_SYSKEYDOWN => m::push(m::EV_KEY_DOWN, info.vk_code as u8, 0),
-                WM_KEYUP | WM_SYSKEYUP => m::push(m::EV_KEY_UP, info.vk_code as u8, 0),
-                _ => {}
+            let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            if is_down || matches!(w as u32, WM_KEYUP | WM_SYSKEYUP) {
+                let vk = info.vk_code & 0xFF;
+                let mut sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) as u16;
+                if sc == 0 {
+                    sc = vk as u16; // 兜底
+                }
+                if info.flags & LLKHF_EXTENDED != 0 {
+                    sc |= m::SC_EXT;
+                }
+                m::push_key(sc, is_down);
             }
         }
     }
+
+    // 快捷键：捕获模式吞掉这一键；否则匹配到就回放
+    if code >= 0 {
+        let info = &*(l as *const KbdHookStruct);
+        if info.flags & LLKHF_INJECTED == 0 {
+            let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            if is_down {
+                let vk = info.vk_code as u8;
+                let mut triggered: Option<Vec<crate::macros::Macro>> = None;
+                if let Ok(mut g) = STATE.lock() {
+                    if let Some(st) = g.as_mut() {
+                        if st.capture {
+                            st.capture = false;
+                            CAPTURED.store(vk as i16, Ordering::Relaxed);
+                            return 1; // 吞掉，避免这个键同时触发原功能
+                        }
+                        if let Some((_, idx)) = st.hotkeys.iter().find(|(k, _)| *k == vk) {
+                            triggered = Some(st.macros.clone());
+                            let i = *idx;
+                            if let Some(m) = triggered.as_ref().and_then(|v| v.get(i)) {
+                                crate::macros::play(m, 1.0);
+                            }
+                            triggered = None;
+                        }
+                    }
+                }
+                let _ = triggered;
+            }
+        }
+    }
+
     CallNextHookEx(0, code, w, l)
 }
 
@@ -330,22 +401,21 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
         use crate::macros as m;
         match msg {
             WM_MOUSEMOVE => m::push_move(info.pt.x, info.pt.y),
-            WM_LBUTTONDOWN => m::push(m::EV_BTN_DOWN, m::BTN_LEFT, 0),
-            WM_LBUTTONUP => m::push(m::EV_BTN_UP, m::BTN_LEFT, 0),
-            WM_RBUTTONDOWN => m::push(m::EV_BTN_DOWN, m::BTN_RIGHT, 0),
-            WM_RBUTTONUP => m::push(m::EV_BTN_UP, m::BTN_RIGHT, 0),
-            WM_MBUTTONDOWN => m::push(m::EV_BTN_DOWN, m::BTN_MIDDLE, 0),
-            WM_MBUTTONUP => m::push(m::EV_BTN_UP, m::BTN_MIDDLE, 0),
+            WM_LBUTTONDOWN => m::push_mouse(m::BTN_LEFT, true),
+            WM_LBUTTONUP => m::push_mouse(m::BTN_LEFT, false),
+            WM_RBUTTONDOWN => m::push_mouse(m::BTN_RIGHT, true),
+            WM_RBUTTONUP => m::push_mouse(m::BTN_RIGHT, false),
+            WM_MBUTTONDOWN => m::push_mouse(m::BTN_MIDDLE, true),
+            WM_MBUTTONUP => m::push_mouse(m::BTN_MIDDLE, false),
             WM_XBUTTONDOWN | WM_XBUTTONUP => {
                 let which = (info.mouse_data >> 16) & 0xFFFF;
                 // 实测：靠前侧键 = XBUTTON2，靠后 = XBUTTON1
                 let btn = if which == 2 { m::BTN_X1 } else { m::BTN_X2 };
-                let kind = if msg == WM_XBUTTONDOWN { m::EV_BTN_DOWN } else { m::EV_BTN_UP };
-                m::push(kind, btn, 0);
+                m::push_mouse(btn, msg == WM_XBUTTONDOWN);
             }
             WM_MOUSEWHEEL => {
                 let delta = (info.mouse_data as i16) as i32;
-                m::push(m::EV_WHEEL, 0, delta);
+                m::push_wheel(delta);
             }
             _ => {}
         }

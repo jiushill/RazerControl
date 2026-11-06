@@ -200,27 +200,23 @@ registry = "sparse+https://rsproxy.cn/index/"
 
 这几个脚本不依赖任何第三方库（只用 `ctypes`），Windows + Python 3.8 即可跑。
 
-## 9. 宏引擎（软件层）
+## 9. 宏引擎（模型照搬 Razer Synapse）
 
-`rz-app/src/macros.rs` 是自包含的：事件模型 + 录制状态 + 回放 + 文本存储。
+`rz-app/src/macros.rs` 自包含。**数据模型不是自己设计的**，是逆向 Synapse 的 IndexedDB 得来的：
 
-**为什么不走设备**：DeathAdder V3 Pro 的 `class 0x08` 全部无应答、`0x00/0x00` 能力位图也不支持，
-说明没有硬件宏存储。Synapse 对这类设备同样在 PC 侧执行宏。
+* 宏定义存在 `%LOCALAPPDATA%\Razer\RazerAppEngine\User Data\Default\IndexedDB\https_apps.razer.com_0.indexeddb.leveldb`，
+  值是 V8 结构化克隆（数字是二进制编码），但文本部分足够看清 schema；
+* 事件是扁平数组，`delay` 是独立事件（不是挂在按键上的 dt），键盘用 scan code + flag；
+* 参数在 `recordProfile` 里：`startDelay / shortcutKey / delayTime / mmtSetting / delaySetting / randomizeDelay{min,max} / macroType`。
 
-**接进钩子的方式**（`hook.rs`）：
+**录制**：`WH_MOUSE_LL` + `WH_KEYBOARD_LL` → `push_key/push_mouse/push_wheel/push_move`，
+每个事件前自动插一条 `delay`（间隔毫秒），与雷云的 events 同构。键盘用
+`MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)` 转 scancode，`LLKHF_EXTENDED` 时或上 `0xE000`。
 
-1. 装两个低级钩子：`WH_MOUSE_LL`（已有）+ `WH_KEYBOARD_LL`（新增，仅录制时记录）；
-2. 在 remap 逻辑**之前**记录，且只在 `!(flags & LLMHF_INJECTED)` 时记 —— 否则回放会被录进去；
-3. 鼠标移动记录的是**增量**（低级钩子给的是绝对坐标，要自己减上一次）。
+**回放**：`SendInput`，键盘走 `KEYEVENTF_SCANCODE`（扩展键加 `KEYEVENTF_EXTENDEDKEY`）；
+遇到 `delay` 事件按 `delaySetting` 决定用录制值 / 固定 / 随机 / 归零；
+`mouseMove` 事件按 `mmtSetting` 走 `SetCursorPos`（屏幕）或换算增量（前台/起始点）。
 
-**加一种新事件类型**：在 `macros.rs` 里加常量 → `push()` 调用点 → `play()` 的 match 分支，
-文本存储和 UI 都不用改。
+加一种新事件类型：在 `macros.rs` 里加 `T_*` 常量 + `append()` 调用点 + 回放 `match` 分支，
+存储和 UI 各加一行即可。
 
-**UI 结构**（`pages::macros`）：状态卡（录制 + 回放速度）→ 宏列表 → 展开后的事件表。
-事件表的延迟是 `egui::DragValue`，改动后立刻写回 `macros.txt` 并调用 `hook::set_macros()`，
-让钩子里的宏快照保持同步 —— `Action::Macro(i)` 触发时用的是这份快照。
-
-注意：页面外层已经有 `ScrollArea`，**不要再套内层 ScrollArea**（嵌套会被外层裁成很矮一条）。
-
-**绑定**：`Action::Macro(u8)`，编码 `20 + i`，上限 8 个；下拉菜单里宏排在「保持默认/禁用」之后、
-其它动作之前 —— 因为菜单经常超出窗口底部，放后面就点不到了。

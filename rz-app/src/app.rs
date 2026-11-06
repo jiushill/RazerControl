@@ -38,6 +38,10 @@ pub struct App {
     pub macro_speed: f32,
     /// 当前展开查看事件的宏
     pub macro_sel: Option<usize>,
+    /// 录制时是否记录鼠标移动
+    pub macro_track_moves: bool,
+    /// 正在等待用户按快捷键
+    pub macro_capture: bool,
     pub page: usize,
     toasts: Vec<Toast>,
     pub connected: bool,
@@ -96,6 +100,8 @@ impl App {
             macro_recording: false,
             macro_speed: 1.0,
             macro_sel: None,
+            macro_track_moves: true,
+            macro_capture: false,
             page: cfg.last_page.min(7),
             toasts: Vec::new(),
             connected: false,
@@ -112,7 +118,7 @@ impl App {
         }
     }
 
-    fn toast(&mut self, msg: String, ok: bool, now: f64) {
+    pub fn toast(&mut self, msg: String, ok: bool, now: f64) {
         self.toasts.push(Toast {
             msg,
             ok,
@@ -215,15 +221,23 @@ impl App {
     /// 结束录制并把结果存进列表
     pub fn macro_finish(&mut self, now: f64) {
         self.macro_recording = false;
-        if let Some(events) = crate::macros::stop_recording() {
+        if let Some((events, origin)) = crate::macros::stop_recording() {
             if events.is_empty() {
                 self.toast("没有录到任何事件".into(), false, now);
                 return;
             }
             let name = format!("宏 {}", self.macros.len() + 1);
+            let mut profile = crate::macros::Profile::default();
+            profile.move_mode = if self.macro_track_moves {
+                crate::macros::MoveMode::Relative
+            } else {
+                crate::macros::MoveMode::None
+            };
             self.macros.push(crate::macros::Macro {
                 name: name.clone(),
                 events,
+                origin,
+                profile,
             });
             crate::hook::set_macros(self.macros.clone());
             match crate::macros::save_all(&self.macros) {

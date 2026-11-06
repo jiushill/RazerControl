@@ -216,7 +216,7 @@ Synapse 自己的日志里能直接对上（`%LOCALAPPDATA%\Razer\RazerAppEngine
 > **坑**：后台每 3 秒的局部刷新只带电量/DPI，它是从 `DeviceState::default()` 拼出来的，
 > `edition = 0` 会把读到的 `0x80` 覆盖回黑色。`merge()` 里必须显式保留 `new.edition = o.edition;`。
 
-### 4.4 宏（软件层）
+### 4.4 宏（模型逆向自 Razer Synapse）
 
 Synapse 的宏对这款鼠标是**纯软件**实现 —— 设备侧既没有宏命令类，也没有能力位图：
 
@@ -226,27 +226,42 @@ Synapse 的宏对这款鼠标是**纯软件**实现 —— 设备侧既没有宏
 有应答的类               → 只有 0x00 / 0x02 / 0x04 / 0x05 / 0x07
 ```
 
-所以「型号支不支持宏」在这个层面上等价于「有没有硬件宏存储」，而这代没有。
-于是按 Synapse 的思路做在 PC 侧：
+宏定义存在 Chromium 的 IndexedDB 里
+（`%LOCALAPPDATA%\Razer\RazerAppEngine\User Data\Default\IndexedDB\https_apps.razer.com_0.indexeddb.leveldb`），
+`RZR_<设备ID>/macro/<宏ID>` 的值反序列化后是这样：
 
-* **录制**：`WH_MOUSE_LL` + `WH_KEYBOARD_LL` 低级钩子，记录移动（绝对坐标换算成增量）/
-  左右中侧键 / 滚轮 / 键盘按键，每条带「距上一条的毫秒数」；
-* **回放**：`SendInput` 按时间轴重放，速度可调；注入的事件带 `LLMHF_INJECTED`，
-  录制时会被过滤，不会把回放又录进去；
-* **事件明细**：每个宏可展开成事件列表，一行一条「延迟 + 动作」，例如
-  `120 ms · A 按下`、`90 ms · 鼠标左键 抬起`；延迟可直接拖动修改，✕ 删单条；
-* **回放速度**：0.25× ~ 4× 滑杆，实时生效；
-* **绑定**：到「按键」页把侧键的下拉改成「宏 · 名字」，再打开「启用软件按键映射」，
-  按一下就回放（宏条目放在菜单最前面，因为它常超出窗口底部）；
-* **存储**：`%APPDATA%\RazerControl\macros.txt`，纯文本，可直接手改：
-
-```text
-[宏 1]
-12,1,0,0        # 间隔ms, 类型, 编码, 值   类型 0=移动 1=按键按下 2=按键抬起 3=滚轮 4=键盘按下 5=键盘抬起
-40,2,0,0
+```json
+{ "name": "Macro 1", "appEngine": {
+    "events": [ {"type":"delay","ms":966},
+                {"type":"keyboard","scancode":30,"flag":1},
+                {"type":"delay","ms":129},
+                {"type":"keyboard","scancode":30,"flag":2}, "..." ],
+    "mouseMoveType": "none",
+    "macroType": 0,
+    "delaySetting": 0,
+    "recordProfile": { "startDelay":0, "shortcutKey":0, "delayTime":0.2,
+                       "mmtSetting":0, "delaySetting":0,
+                       "randomizeDelay":{"min":0.2,"max":0.5}, "macroType":0 } } }
 ```
 
-限制：`Ctrl+Alt+Del` 这类安全序列录不到；录制期间不要回放其它宏。
+三个"必须照抄"的点：
+
+| 项 | 雷云的做法 | 本项目的实现 |
+| --- | --- | --- |
+| 延迟 | **独立的 `delay` 事件**，与按键交替排列 | `events` 数组里 `kind=delay`，UI 里每行一个可编辑秒数 |
+| 键盘 | **scan code + flag**（1 按下 / 2 抬起） | 录制时 `MapVirtualKey` 反查 scancode，扩展键置 `0xE000` 位；回放用 `KEYEVENTF_SCANCODE` |
+| 移动追踪 | 字符串枚举 `none/absolute/relative/origin` | 同一个枚举；录制存**绝对坐标**，回放按模式换算成 `SetCursorPos` 或 `SendInput(MOVE, dx, dy)` |
+
+参数面板与雷云一致：**启动延迟 / 快捷键 / 宏类型（标准·序列·分类）/ 延迟设置（录制·固定·随机·无）/ 移动追踪（无·屏幕·前台·起始点）**。
+序列宏与分类宏需要多分支结构，当前只实现标准宏（UI 里置灰并标注）。
+
+存储是纯文本，格式与上面的 events 一一对应：
+
+```text
+[Macro 1|start=0|hot=0|delayTime=0.2|randMin=0.2|randMax=0.5|delaySetting=recorded|mmt=relative|macroType=0|ox=0|oy=0]
+0,0,0,0        # kind=0 延迟, a=毫秒
+1,30,1,0       # kind=1 键盘, a=scancode, b=flag
+```
 
 ![宏](docs/08-macros.png)
 
