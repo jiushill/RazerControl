@@ -1092,6 +1092,128 @@ fn btn_name(i: usize) -> &'static str {
     }
 }
 
+// ---------------- 宏 ----------------
+pub fn macros(app: &mut App, ui: &mut Ui) {
+    page_head(app, ui, "宏", "录制鼠标与键盘动作，一键回放");
+
+    if app.macro_recording {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    }
+
+    // ---- 状态卡 ----
+    theme::card(ui, CardStyle::new().pad(20.0), |ui| {
+        ui.horizontal(|ui| {
+            let recording = app.macro_recording;
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(if recording { "录制中…" } else { "就绪" })
+                        .font(app.ty.h2.clone())
+                        .color(if recording { WARN } else { TEXT }),
+                );
+                ui.add_space(2.0);
+                let detail = if recording {
+                    format!("已记录 {} 个事件", crate::macros::event_count())
+                } else {
+                    "点「开始录制」后操作鼠标键盘，再点「停止并保存」".to_string()
+                };
+                ui.label(egui::RichText::new(detail).font(app.ty.small.clone()).color(MUTED));
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if app.macro_recording {
+                    if widgets::accent_button(ui, &app.ty, "停止并保存").clicked() {
+                        app.macro_finish(ui.input(|i| i.time));
+                    }
+                } else if widgets::accent_button(ui, &app.ty, "开始录制").clicked() {
+                    crate::macros::start_recording();
+                    app.macro_recording = true;
+                }
+            });
+        });
+    });
+
+    ui.add_space(12.0);
+
+    // ---- 宏列表 ----
+    if app.macros.is_empty() {
+        theme::card(ui, CardStyle::new().pad(20.0), |ui| {
+            ui.label(
+                egui::RichText::new("还没有宏")
+                    .font(app.ty.h2.clone())
+                    .color(TEXT),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "录好的宏会存到 {}，格式是纯文本，可以手动编辑",
+                    crate::macros::store_path()
+                ))
+                .font(app.ty.small.clone())
+                .color(MUTED),
+            );
+        });
+    } else {
+        let mut to_delete: Option<usize> = None;
+        let mut to_play: Option<usize> = None;
+        for (i, m) in app.macros.iter().enumerate() {
+            theme::card(ui, CardStyle::new(), |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(&m.name)
+                                .font(app.ty.h2.clone())
+                                .color(TEXT),
+                        );
+                        ui.label(
+                            egui::RichText::new(m.summary())
+                                .font(app.ty.tiny.clone())
+                                .color(MUTED),
+                        );
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if widgets::ghost_button(ui, &app.ty, "删除").clicked() {
+                            to_delete = Some(i);
+                        }
+                        ui.add_space(6.0);
+                        if widgets::ghost_button(ui, &app.ty, "回放").clicked() {
+                            to_play = Some(i);
+                        }
+                    });
+                });
+            });
+            ui.add_space(8.0);
+        }
+        if let Some(i) = to_play {
+            crate::macros::play(&app.macros[i].events, app.macro_speed);
+        }
+        if let Some(i) = to_delete {
+            app.macros.remove(i);
+            let _ = crate::macros::save_all(&app.macros);
+        }
+    }
+
+    ui.add_space(8.0);
+    theme::card(ui, CardStyle::new(), |ui| {
+        ui.label(
+            egui::RichText::new("说明")
+                .font(app.ty.h2.clone())
+                .color(TEXT),
+        );
+        ui.add_space(6.0);
+        for line in [
+            "这台鼠标没有硬件宏（宏命令类 0x08 无应答、能力位图命令不支持），所以宏和 Synapse 一样跑在 PC 侧",
+            "录制走低级钩子（WH_MOUSE_LL + WH_KEYBOARD_LL），回放用 SendInput 注入，不会重复录制自己注入的事件",
+            "录制期间请勿回放其它宏；Esc / 组合键也能录，但 Ctrl+Alt+Del 这类安全序列录不到",
+        ] {
+            ui.label(
+                egui::RichText::new(format!("· {}", line))
+                    .font(app.ty.small.clone())
+                    .color(MUTED),
+            );
+            ui.add_space(2.0);
+        }
+    });
+}
+
 // ---------------- 灯效 ----------------
 pub fn lighting(app: &mut App, ui: &mut Ui) {
     page_head(app, ui, "灯效", "Chroma 灯区控制");

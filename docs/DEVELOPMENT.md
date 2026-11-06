@@ -199,3 +199,20 @@ registry = "sparse+https://rsproxy.cn/index/"
 | `probe_wired.py` | 多控制接口逐个探测（插线时会出现两个接口） |
 
 这几个脚本不依赖任何第三方库（只用 `ctypes`），Windows + Python 3.8 即可跑。
+
+## 9. 宏引擎（软件层）
+
+`rz-app/src/macros.rs` 是自包含的：事件模型 + 录制状态 + 回放 + 文本存储。
+
+**为什么不走设备**：DeathAdder V3 Pro 的 `class 0x08` 全部无应答、`0x00/0x00` 能力位图也不支持，
+说明没有硬件宏存储。Synapse 对这类设备同样在 PC 侧执行宏。
+
+**接进钩子的方式**（`hook.rs`）：
+
+1. 装两个低级钩子：`WH_MOUSE_LL`（已有）+ `WH_KEYBOARD_LL`（新增，仅录制时记录）；
+2. 在 remap 逻辑**之前**记录，且只在 `!(flags & LLMHF_INJECTED)` 时记 —— 否则回放会被录进去；
+3. 鼠标移动记录的是**增量**（低级钩子给的是绝对坐标，要自己减上一次）。
+
+**加一种新事件类型**：在 `macros.rs` 里加常量 → `push()` 调用点 → `play()` 的 match 分支，
+文本存储和 UI 都不用改。
+

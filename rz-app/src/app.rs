@@ -14,9 +14,7 @@ use egui::{Align, Align2, Color32, Context, FontId, Id, Pos2, Rect, Rounding, Se
 use rz_core::DeviceState;
 use std::time::Duration;
 
-pub const PAGE_NAMES: [&str; 7] = [
-    "概览", "DPI", "性能", "校准", "按键", "灯效", "设置",
-];
+pub const PAGE_NAMES: [&str; 8] = ["概览", "DPI", "性能", "校准", "按键", "宏", "灯效", "设置"];
 
 struct Toast {
     msg: String,
@@ -32,6 +30,12 @@ pub struct App {
     pub photo_dav3_white: Option<photo::Photo>,
     pub photo_dav2_black: Option<photo::Photo>,
     pub cfg: Config,
+    /// 已保存的宏
+    pub macros: Vec<crate::macros::Macro>,
+    /// 是否正在录制（与 macros::is_recording 同步）
+    pub macro_recording: bool,
+    /// 回放速度
+    pub macro_speed: f32,
     pub page: usize,
     toasts: Vec<Toast>,
     pub connected: bool,
@@ -85,7 +89,10 @@ impl App {
             photo_dav3_black,
             photo_dav3_white,
             photo_dav2_black,
-            page: cfg.last_page.min(6),
+            macros: crate::macros::load_all(),
+            macro_recording: false,
+            macro_speed: 1.0,
+            page: cfg.last_page.min(7),
             toasts: Vec::new(),
             connected: false,
             asleep: false,
@@ -199,6 +206,29 @@ impl App {
         tray::hide_main();
         tray::notify("RazerControl", "已最小化到托盘 · 右键托盘图标可退出");
         let _ = ctx;
+    }
+
+    /// 结束录制并把结果存进列表
+    pub fn macro_finish(&mut self, now: f64) {
+        self.macro_recording = false;
+        if let Some(events) = crate::macros::stop_recording() {
+            if events.is_empty() {
+                self.toast("没有录到任何事件".into(), false, now);
+                return;
+            }
+            let name = format!("宏 {}", self.macros.len() + 1);
+            self.macros.push(crate::macros::Macro {
+                name: name.clone(),
+                events,
+            });
+            match crate::macros::save_all(&self.macros) {
+                Ok(_) => {
+                    let n = self.macros.len();
+                    self.toast(format!("已保存「{}」（共 {} 个宏）", name, n), true, now)
+                }
+                Err(e) => self.toast(format!("保存失败: {}", e), false, now),
+            }
+        }
     }
 
     /// 当前型号 + 配色对应的官方产品图（editionId 0x80 = 白色）
@@ -346,6 +376,7 @@ impl App {
                     widgets::Icon::Perf,
                     widgets::Icon::Calib,
                     widgets::Icon::Buttons,
+                    widgets::Icon::Macro,
                     widgets::Icon::Light,
                     widgets::Icon::Settings,
                 ];
@@ -487,7 +518,8 @@ impl App {
                                     2 => pages::performance(self, ui),
                                     3 => pages::calibration(self, ui),
                                     4 => pages::buttons(self, ui),
-                                    5 => pages::lighting(self, ui),
+                                    5 => pages::macros(self, ui),
+                                    6 => pages::lighting(self, ui),
                                     _ => pages::settings(self, ui),
                                 }
                                 ui.add_space(26.0);

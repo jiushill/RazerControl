@@ -13,6 +13,18 @@ use std::sync::{
 use std::thread;
 
 const WH_MOUSE_LL: i32 = 14;
+const WH_KEYBOARD_LL: i32 = 13;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_RBUTTONDOWN: u32 = 0x0204;
+const WM_RBUTTONUP: u32 = 0x0205;
+const WM_MOUSEWHEEL: u32 = 0x020A;
+const WM_KEYDOWN: u32 = 0x0100;
+const WM_KEYUP: u32 = 0x0101;
+const WM_SYSKEYDOWN: u32 = 0x0104;
+const WM_SYSKEYUP: u32 = 0x0105;
+const LLKHF_INJECTED: u32 = 0x10;
 const WM_MBUTTONDOWN: u32 = 0x0207;
 const WM_MBUTTONUP: u32 = 0x0208;
 const WM_XBUTTONDOWN: u32 = 0x020B;
@@ -39,6 +51,15 @@ struct Point {
 struct MsllHookStruct {
     pt: Point,
     mouse_data: u32,
+    flags: u32,
+    time: u32,
+    extra: usize,
+}
+
+#[repr(C)]
+struct KbdHookStruct {
+    vk_code: u32,
+    scan_code: u32,
     flags: u32,
     time: u32,
     extra: usize,
@@ -162,10 +183,15 @@ pub fn install() -> bool {
         if hook == 0 {
             return;
         }
+        // 键盘钩子用于宏录制（不影响日常输入，只在录制时记录）
+        let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), module, 0);
         INSTALLED.store(true, Ordering::Relaxed);
         let mut msg: Msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {}
         UnhookWindowsHookEx(hook);
+        if kb != 0 {
+            UnhookWindowsHookEx(kb);
+        }
         INSTALLED.store(false, Ordering::Relaxed);
     });
     true
@@ -256,15 +282,57 @@ fn perform(act: Action, tx: Option<Sender<Req>>) {
     }
 }
 
+unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
+    if code >= 0 && crate::macros::is_recording() {
+        let info = &*(l as *const KbdHookStruct);
+        if info.flags & LLKHF_INJECTED == 0 {
+            use crate::macros as m;
+            match w as u32 {
+                WM_KEYDOWN | WM_SYSKEYDOWN => m::push(m::EV_KEY_DOWN, info.vk_code as u8, 0),
+                WM_KEYUP | WM_SYSKEYUP => m::push(m::EV_KEY_UP, info.vk_code as u8, 0),
+                _ => {}
+            }
+        }
+    }
+    CallNextHookEx(0, code, w, l)
+}
+
 unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
     if code < 0 {
         return CallNextHookEx(0, code, w, l);
     }
     let info = &*(l as *const MsllHookStruct);
+    let msg = w as u32;
+
+    // ---- 宏录制（注入事件不录，否则回放会被再次录进去）----
+    if info.flags & LLMHF_INJECTED == 0 && crate::macros::is_recording() {
+        use crate::macros as m;
+        match msg {
+            WM_MOUSEMOVE => m::push_move(info.pt.x, info.pt.y),
+            WM_LBUTTONDOWN => m::push(m::EV_BTN_DOWN, m::BTN_LEFT, 0),
+            WM_LBUTTONUP => m::push(m::EV_BTN_UP, m::BTN_LEFT, 0),
+            WM_RBUTTONDOWN => m::push(m::EV_BTN_DOWN, m::BTN_RIGHT, 0),
+            WM_RBUTTONUP => m::push(m::EV_BTN_UP, m::BTN_RIGHT, 0),
+            WM_MBUTTONDOWN => m::push(m::EV_BTN_DOWN, m::BTN_MIDDLE, 0),
+            WM_MBUTTONUP => m::push(m::EV_BTN_UP, m::BTN_MIDDLE, 0),
+            WM_XBUTTONDOWN | WM_XBUTTONUP => {
+                let which = (info.mouse_data >> 16) & 0xFFFF;
+                // 实测：靠前侧键 = XBUTTON2，靠后 = XBUTTON1
+                let btn = if which == 2 { m::BTN_X1 } else { m::BTN_X2 };
+                let kind = if msg == WM_XBUTTONDOWN { m::EV_BTN_DOWN } else { m::EV_BTN_UP };
+                m::push(kind, btn, 0);
+            }
+            WM_MOUSEWHEEL => {
+                let delta = (info.mouse_data as i16) as i32;
+                m::push(m::EV_WHEEL, 0, delta);
+            }
+            _ => {}
+        }
+    }
+
     if info.flags & LLMHF_INJECTED != 0 {
         return CallNextHookEx(0, code, w, l);
     }
-    let msg = w as u32;
     let (idx, is_down) = match msg {
         WM_MBUTTONDOWN => (2usize, true),
         WM_MBUTTONUP => (2, false),

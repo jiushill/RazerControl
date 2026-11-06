@@ -10,6 +10,7 @@ mod backend;
 mod cache;
 mod config;
 mod hook;
+mod macros;
 mod json;
 mod pages;
 mod photo;

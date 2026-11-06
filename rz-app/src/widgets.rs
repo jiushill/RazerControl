@@ -13,6 +13,7 @@ pub enum Icon {
     Dpi,
     Perf,
     Buttons,
+    Macro,
     Light,
     Settings,
     Min,
@@ -32,6 +33,18 @@ pub fn icon(p: &egui::Painter, rect: Rect, ic: Icon, color: Color32) {
     let w = (s * 0.09).max(1.3);
     let st = Stroke::new(w, color);
     match ic {
+        Icon::Macro => {
+            // 圆环 + 播放三角 + 左上录制点
+            p.circle_stroke(c, s * 0.40, st);
+            let r = s * 0.17;
+            let tri = vec![
+                Pos2::new(c.x - r * 0.7, c.y - r),
+                Pos2::new(c.x - r * 0.7, c.y + r),
+                Pos2::new(c.x + r, c.y),
+            ];
+            p.add(Shape::convex_polygon(tri, color, Stroke::NONE));
+            p.circle_filled(c + Vec2::new(-s * 0.34, -s * 0.34), s * 0.075, color);
+        }
         Icon::Dashboard => {
             let g = s * 0.10;
             let q = (s - g * 3.0) / 2.0;
