@@ -85,10 +85,18 @@ jobs:
 
       - name: 发布 Release（仅打 v* tag 时）
         if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${{ github.ref_name }}"
-          RazerControl-windows-x64.zip
-          --title "RazerControl ${{ github.ref_name }}"
-          --generate-notes
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $zip = 'RazerControl-windows-x64.zip'
+          # 幂等：Re-tag / 重跑时 Release 可能已存在，那就覆盖资产而不是报错
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag 已存在，覆盖上传资产"
+            gh release upload $tag $zip --clobber
+          } else {
+            Write-Host "创建 Release $tag"
+            gh release create $tag $zip --title "RazerControl $tag" --generate-notes
+          }
