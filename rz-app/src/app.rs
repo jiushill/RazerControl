@@ -616,28 +616,51 @@ impl App {
 }
 
 fn merge(old: Option<&DeviceState>, mut new: DeviceState) -> DeviceState {
+    // 设备有时会"半答半不答"：身份信息（名称/固件/版本号）读得到，
+    // 但 DPI / 轮询率 / 电量全部超时。这种残缺快照绝不能覆盖已有数值，
+    // 否则界面会卡在「状态未知 · — · 无数据」直到重启。
     if let Some(o) = old {
         if new.dpi == (0, 0) {
             new.dpi = o.dpi;
+        }
+        if new.poll_hz == 0 {
+            new.poll_hz = o.poll_hz;
+            new.poll_code = o.poll_code;
+        }
+        if !new.battery.present {
+            new.battery = o.battery;
+        }
+        if new.max_dpi == 0 {
+            new.max_dpi = o.max_dpi;
+            // spec 没读到 → 连接方式也不可信（否则会误显示成 USB）
+            new.wireless = o.wireless;
+        }
+        if new.max_poll == 0 {
+            new.max_poll = o.max_poll;
+        }
+        if !new.has_rgb {
+            new.has_rgb = o.has_rgb;
+        }
+        if new.firmware.is_empty() {
+            new.firmware = o.firmware.clone();
+        }
+        if new.serial.is_empty() {
+            new.serial = o.serial.clone();
+        }
+        if new.edition == 0 {
+            new.edition = o.edition;
+        }
+        if !new.caps.dpi && !new.caps.poll_rate && !new.caps.battery {
+            new.caps = o.caps;
         }
         if new.profile.stages.is_empty() {
             new.profile = o.profile.clone();
             new.sleep_secs = o.sleep_secs;
             new.low_battery_percent = o.low_battery_percent;
-            new.firmware = o.firmware.clone();
-            new.serial = o.serial.clone();
-            new.poll_hz = o.poll_hz;
-            new.poll_code = o.poll_code;
-            new.max_dpi = o.max_dpi;
-            new.max_poll = o.max_poll;
-            new.has_rgb = o.has_rgb;
             new.brightness = new.brightness.or(o.brightness);
-            new.edition = o.edition;
-            new.caps = o.caps;
-            new.wireless = o.wireless;
-            if new.name.is_empty() {
-                new.name = o.name.clone();
-            }
+        }
+        if new.name.is_empty() {
+            new.name = o.name.clone();
         }
     }
     new
