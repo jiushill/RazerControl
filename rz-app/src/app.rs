@@ -36,6 +36,8 @@ pub struct App {
     pub macro_recording: bool,
     /// 回放速度
     pub macro_speed: f32,
+    /// 当前展开查看事件的宏
+    pub macro_sel: Option<usize>,
     pub page: usize,
     toasts: Vec<Toast>,
     pub connected: bool,
@@ -61,6 +63,7 @@ impl App {
         tray::install(ctx.clone());
         tray::hook_close();
         hook::configure(cfg.remap_enabled, cfg.remaps, backend.sender());
+        hook::set_macros(crate::macros::load_all());
         let photo_dav3_black = photo::load(
             ctx,
             include_bytes!("../assets/device_dav3pro.png"),
@@ -92,6 +95,7 @@ impl App {
             macros: crate::macros::load_all(),
             macro_recording: false,
             macro_speed: 1.0,
+            macro_sel: None,
             page: cfg.last_page.min(7),
             toasts: Vec::new(),
             connected: false,
@@ -221,6 +225,7 @@ impl App {
                 name: name.clone(),
                 events,
             });
+            crate::hook::set_macros(self.macros.clone());
             match crate::macros::save_all(&self.macros) {
                 Ok(_) => {
                     let n = self.macros.len();

@@ -216,3 +216,11 @@ registry = "sparse+https://rsproxy.cn/index/"
 **加一种新事件类型**：在 `macros.rs` 里加常量 → `push()` 调用点 → `play()` 的 match 分支，
 文本存储和 UI 都不用改。
 
+**UI 结构**（`pages::macros`）：状态卡（录制 + 回放速度）→ 宏列表 → 展开后的事件表。
+事件表的延迟是 `egui::DragValue`，改动后立刻写回 `macros.txt` 并调用 `hook::set_macros()`，
+让钩子里的宏快照保持同步 —— `Action::Macro(i)` 触发时用的是这份快照。
+
+注意：页面外层已经有 `ScrollArea`，**不要再套内层 ScrollArea**（嵌套会被外层裁成很矮一条）。
+
+**绑定**：`Action::Macro(u8)`，编码 `20 + i`，上限 8 个；下拉菜单里宏排在「保持默认/禁用」之后、
+其它动作之前 —— 因为菜单经常超出窗口底部，放后面就点不到了。

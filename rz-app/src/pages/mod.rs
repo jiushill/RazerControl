@@ -1044,10 +1044,35 @@ pub fn buttons(app: &mut App, ui: &mut Ui) {
                             let cur = app.cfg.remaps[i];
                             let mut sel = cur;
                             egui::ComboBox::from_id_salt(("act", i))
-                                .selected_text(cur.label())
+                                .selected_text(match cur {
+                                    Action::Macro(k) => match app.macros.get(k as usize) {
+                                        Some(m) => format!("宏 · {}", m.name),
+                                        None => "宏（已删除）".to_string(),
+                                    },
+                                    other => other.label().to_string(),
+                                })
                                 .width(168.0)
                                 .show_ui(ui, |ui| {
-                                    for a in Action::ALL {
+                                    // 保持默认 / 禁用 放最上面
+                                    for a in [Action::Pass, Action::Disabled] {
+                                        if ui.selectable_label(a == cur, a.label()).clicked() {
+                                            sel = a;
+                                        }
+                                    }
+                                    // 宏紧随其后：菜单常超出窗口底部，放前面才点得到
+                                    let n = app.macros.len().min(Action::MAX_MACROS as usize);
+                                    if n > 0 {
+                                        ui.separator();
+                                        for k in 0..n {
+                                            let a = Action::Macro(k as u8);
+                                            let text = format!("宏 · {}", app.macros[k].name);
+                                            if ui.selectable_label(a == cur, text).clicked() {
+                                                sel = a;
+                                            }
+                                        }
+                                    }
+                                    ui.separator();
+                                    for a in Action::ALL.into_iter().skip(2) {
                                         if ui.selectable_label(a == cur, a.label()).clicked() {
                                             sel = a;
                                         }
@@ -1094,13 +1119,13 @@ fn btn_name(i: usize) -> &'static str {
 
 // ---------------- 宏 ----------------
 pub fn macros(app: &mut App, ui: &mut Ui) {
-    page_head(app, ui, "宏", "录制鼠标与键盘动作，一键回放");
-
+    page_head(app, ui, "宏", "录制鼠标与键盘动作，可绑定到侧键");
     if app.macro_recording {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
     }
 
-    // ---- 状态卡 ----
+    // ---- 状态 + 回放速度 ----
     theme::card(ui, CardStyle::new().pad(20.0), |ui| {
         ui.horizontal(|ui| {
             let recording = app.macro_recording;
@@ -1112,11 +1137,15 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 );
                 ui.add_space(2.0);
                 let detail = if recording {
-                    format!("已记录 {} 个事件", crate::macros::event_count())
+                    format!("已记录 {} 个事件，点右边结束", crate::macros::event_count())
                 } else {
                     "点「开始录制」后操作鼠标键盘，再点「停止并保存」".to_string()
                 };
-                ui.label(egui::RichText::new(detail).font(app.ty.small.clone()).color(MUTED));
+                ui.label(
+                    egui::RichText::new(detail)
+                        .font(app.ty.small.clone())
+                        .color(MUTED),
+                );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if app.macro_recording {
@@ -1128,6 +1157,35 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     app.macro_recording = true;
                 }
             });
+        });
+
+        ui.add_space(10.0);
+        divider(ui);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("回放速度")
+                    .font(app.ty.small.clone())
+                    .color(MUTED),
+            );
+            let mut sp = app.macro_speed;
+            let w = ui.available_width().min(260.0);
+            widgets::slider(
+                ui,
+                egui::Id::new("macro_speed"),
+                &mut sp,
+                0.25,
+                4.0,
+                0.25,
+                w,
+                ACCENT,
+            );
+            app.macro_speed = sp;
+            ui.label(
+                egui::RichText::new(format!("{:.2}×", app.macro_speed))
+                    .font(app.ty.mono.clone())
+                    .color(TEXT),
+            );
         });
     });
 
@@ -1144,7 +1202,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "录好的宏会存到 {}，格式是纯文本，可以手动编辑",
+                    "录好的宏会存到 {}，纯文本可手动编辑",
                     crate::macros::store_path()
                 ))
                 .font(app.ty.small.clone())
@@ -1154,17 +1212,23 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     } else {
         let mut to_delete: Option<usize> = None;
         let mut to_play: Option<usize> = None;
-        for (i, m) in app.macros.iter().enumerate() {
+        let mut toggled: Option<usize> = None;
+        let mut edited: Option<usize> = None;
+
+        for i in 0..app.macros.len() {
+            let name = app.macros[i].name.clone();
+            let summary = app.macros[i].summary();
+            let expanded = app.macro_sel == Some(i);
             theme::card(ui, CardStyle::new(), |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
-                            egui::RichText::new(&m.name)
+                            egui::RichText::new(&name)
                                 .font(app.ty.h2.clone())
                                 .color(TEXT),
                         );
                         ui.label(
-                            egui::RichText::new(m.summary())
+                            egui::RichText::new(&summary)
                                 .font(app.ty.tiny.clone())
                                 .color(MUTED),
                         );
@@ -1177,32 +1241,109 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                         if widgets::ghost_button(ui, &app.ty, "回放").clicked() {
                             to_play = Some(i);
                         }
+                        ui.add_space(6.0);
+                        if widgets::ghost_button(ui, &app.ty, if expanded { "收起" } else { "查看事件" })
+                            .clicked()
+                        {
+                            toggled = Some(i);
+                        }
                     });
                 });
+
+                if expanded {
+                    ui.add_space(8.0);
+                    divider(ui);
+                    ui.add_space(6.0);
+                    let mut evs = app.macros[i].events.clone();
+                    let mut changed = false;
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "共 {} 条事件（左列是「距上一条的延迟」，可直接拖动）",
+                            evs.len()
+                        ))
+                        .font(app.ty.tiny.clone())
+                        .color(MUTED),
+                    );
+                    ui.add_space(4.0);
+                    for j in 0..evs.len() {
+                        ui.horizontal(|ui| {
+                            let mut dt = evs[j].dt as f64;
+                            let r = ui.add(
+                                egui::DragValue::new(&mut dt)
+                                    .speed(1.0)
+                                    .range(0.0..=65_535.0)
+                                    .suffix(" ms"),
+                            );
+                            if r.changed() {
+                                evs[j].dt = dt.round() as u16;
+                                changed = true;
+                            }
+                            ui.add_space(6.0);
+                            let color = match evs[j].kind {
+                                crate::macros::EV_MOVE => MUTED,
+                                crate::macros::EV_WHEEL => INFO,
+                                crate::macros::EV_KEY_DOWN | crate::macros::EV_KEY_UP => ACCENT,
+                                _ => TEXT,
+                            };
+                            ui.label(
+                                egui::RichText::new(crate::macros::ev_label(&evs[j]))
+                                    .font(app.ty.small.clone())
+                                    .color(color),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .small_button("✕")
+                                    .on_hover_text("删除这一条")
+                                    .clicked()
+                                {
+                                    evs.remove(j);
+                                    changed = true;
+                                }
+                            });
+                        });
+                    }
+                    if changed {
+                        app.macros[i].events = evs;
+                        edited = Some(i);
+                    }
+                }
             });
             ui.add_space(8.0);
+        }
+
+        if let Some(i) = toggled {
+            app.macro_sel = if app.macro_sel == Some(i) { None } else { Some(i) };
         }
         if let Some(i) = to_play {
             crate::macros::play(&app.macros[i].events, app.macro_speed);
         }
+        if let Some(i) = edited {
+            let _ = crate::macros::save_all(&app.macros);
+            crate::hook::set_macros(app.macros.clone());
+        }
         if let Some(i) = to_delete {
             app.macros.remove(i);
+            if app.macro_sel == Some(i) {
+                app.macro_sel = None;
+            }
             let _ = crate::macros::save_all(&app.macros);
+            crate::hook::set_macros(app.macros.clone());
         }
     }
 
     ui.add_space(8.0);
     theme::card(ui, CardStyle::new(), |ui| {
         ui.label(
-            egui::RichText::new("说明")
+            egui::RichText::new("绑定与说明")
                 .font(app.ty.h2.clone())
                 .color(TEXT),
         );
         ui.add_space(6.0);
         for line in [
-            "这台鼠标没有硬件宏（宏命令类 0x08 无应答、能力位图命令不支持），所以宏和 Synapse 一样跑在 PC 侧",
-            "录制走低级钩子（WH_MOUSE_LL + WH_KEYBOARD_LL），回放用 SendInput 注入，不会重复录制自己注入的事件",
-            "录制期间请勿回放其它宏；Esc / 组合键也能录，但 Ctrl+Alt+Del 这类安全序列录不到",
+            "绑定：到「按键」页，把某个侧键的下拉改成「宏 · 名字」，再打开「启用软件按键映射」即可",
+            "这台鼠标没有硬件宏（宏命令类 0x08 无应答、能力位图命令不支持），宏和 Synapse 一样跑在 PC 侧",
+            "每条事件的左边是「距上一条的延迟」，可直接拖动修改；✕ 删除单条",
+            "录制走低级钩子，回放用 SendInput 注入，注入事件会被过滤，不会自己录自己",
         ] {
             ui.label(
                 egui::RichText::new(format!("· {}", line))

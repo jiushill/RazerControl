@@ -18,9 +18,14 @@ pub enum Action {
     PlayPause,
     VolUp,
     VolDown,
+    /// 触发第 n 个宏
+    Macro(u8),
 }
 
 impl Action {
+    /// 可绑定的宏数量上限
+    pub const MAX_MACROS: u8 = 8;
+
     pub const ALL: [Action; 12] = [
         Action::Pass,
         Action::Disabled,
@@ -51,6 +56,7 @@ impl Action {
             Action::PlayPause => "播放/暂停",
             Action::VolUp => "音量 +",
             Action::VolDown => "音量 −",
+            Action::Macro(_) => "宏",
         }
     }
 
@@ -69,10 +75,14 @@ impl Action {
             Action::PlayPause => 10,
             Action::VolUp => 11,
             Action::VolDown => 12,
+            Action::Macro(n) => 20 + n,
         }
     }
 
     pub fn from_code(c: u8) -> Action {
+        if (20..20 + Action::MAX_MACROS).contains(&c) {
+            return Action::Macro(c - 20);
+        }
         Action::ALL
             .iter()
             .copied()

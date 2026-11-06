@@ -140,6 +140,8 @@ extern "system" {
 struct HookState {
     enabled: bool,
     actions: [Action; 5],
+    /// 宏快照（绑定改动时同步）
+    macros: Vec<crate::macros::Macro>,
     tx: Option<Sender<Req>>,
     swallowed: [bool; 5],
 }
@@ -164,10 +166,20 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
                 *g = Some(HookState {
                     enabled,
                     actions,
+                    macros: Vec::new(),
                     tx: Some(tx),
                     swallowed: [false; 5],
                 })
             }
+        }
+    }
+}
+
+/// 同步宏列表（录制/删除后调用），供 `Action::Macro` 回放使用。
+pub fn set_macros(list: Vec<crate::macros::Macro>) {
+    if let Ok(mut g) = STATE.lock() {
+        if let Some(s) = g.as_mut() {
+            s.macros = list;
         }
     }
 }
@@ -260,9 +272,18 @@ unsafe fn key_combo(modifier: u16, vk: u16) {
 }
 
 fn perform(act: Action, tx: Option<Sender<Req>>) {
+    perform_with(act, tx, &[]);
+}
+
+fn perform_with(act: Action, tx: Option<Sender<Req>>, macros: &[crate::macros::Macro]) {
     unsafe {
         match act {
             Action::Pass | Action::Disabled => {}
+            Action::Macro(k) => {
+                if let Some(m) = macros.get(k as usize) {
+                    crate::macros::play(&m.events, 1.0);
+                }
+            }
             Action::Left => send_mouse(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),
             Action::Right => send_mouse(MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, 0),
             Action::Middle => send_mouse(MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0),
@@ -358,8 +379,9 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
         }
         st.swallowed[idx] = true;
         let tx = st.tx.clone();
+        let macros = st.macros.clone();
         drop(g);
-        perform(act, tx);
+        perform_with(act, tx, &macros);
         1
     } else if st.swallowed[idx] {
         st.swallowed[idx] = false;

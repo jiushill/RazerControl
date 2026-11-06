@@ -297,6 +297,82 @@ pub fn play(events: &[Ev], speed: f32) {
     });
 }
 
+
+// ---------- 人类可读描述 ----------
+pub fn btn_name(b: u8) -> &'static str {
+    match b {
+        BTN_LEFT => "鼠标左键",
+        BTN_RIGHT => "鼠标右键",
+        BTN_MIDDLE => "滚轮中键",
+        BTN_X1 => "侧键 · 前进",
+        _ => "侧键 · 后退",
+    }
+}
+
+pub fn key_name(vk: u8) -> String {
+    match vk {
+        0x41..=0x5A => ((vk as u8) as char).to_string(),
+        0x30..=0x39 => ((vk as u8) as char).to_string(),
+        0x70..=0x87 => format!("F{}", vk - 0x6F),
+        0x20 => "空格".into(),
+        0x0D => "回车".into(),
+        0x1B => "Esc".into(),
+        0x09 => "Tab".into(),
+        0x08 => "退格".into(),
+        0x10 => "Shift".into(),
+        0x11 => "Ctrl".into(),
+        0x12 => "Alt".into(),
+        0x5B => "Win".into(),
+        0x25 => "←".into(),
+        0x26 => "↑".into(),
+        0x27 => "→".into(),
+        0x28 => "↓".into(),
+        0x2C => "PrtSc".into(),
+        0x2D => "Insert".into(),
+        0x2E => "Delete".into(),
+        0x24 => "Home".into(),
+        0x23 => "End".into(),
+        0x21 => "PgUp".into(),
+        0x22 => "PgDn".into(),
+        0xBA => ";".into(),
+        0xBB => "=".into(),
+        0xBC => ",".into(),
+        0xBD => "-".into(),
+        0xBE => ".".into(),
+        0xBF => "/".into(),
+        0xC0 => "`".into(),
+        _ => format!("VK_{:02X}", vk),
+    }
+}
+
+/// 一行事件描述，例如「鼠标左键 按下」「移动 dx=12 dy=-3」「A 按下」
+pub fn ev_label(e: &Ev) -> String {
+    match e.kind {
+        EV_MOVE => {
+            let dx = (e.val >> 16) as i16 as i32;
+            let dy = e.val as i16 as i32;
+            format!("移动  dx={} dy={}", dx, dy)
+        }
+        EV_BTN_DOWN => format!("{} 按下", btn_name(e.code)),
+        EV_BTN_UP => format!("{} 抬起", btn_name(e.code)),
+        EV_WHEEL => format!("滚轮 {}", if e.val > 0 { "上" } else { "下" }),
+        EV_KEY_DOWN => format!("{} 按下", key_name(e.code)),
+        EV_KEY_UP => format!("{} 抬起", key_name(e.code)),
+        _ => "未知事件".to_string(),
+    }
+}
+
+/// 事件大类（用于着色/分组）
+pub fn ev_kind_name(e: &Ev) -> &'static str {
+    match e.kind {
+        EV_MOVE => "移动",
+        EV_BTN_DOWN | EV_BTN_UP => "鼠标",
+        EV_WHEEL => "滚轮",
+        EV_KEY_DOWN | EV_KEY_UP => "键盘",
+        _ => "其它",
+    }
+}
+
 // ---------- 存储 ----------
 fn dir() -> PathBuf {
     let base = std::env::var("APPDATA")
