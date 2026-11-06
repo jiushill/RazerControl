@@ -652,6 +652,9 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // 把窗口焦点/可见性告诉后台线程（决定轮询频率）
+        let focused = ctx.input(|i| i.focused);
+        crate::backend::set_ui_state(focused, true);
         self.pump(ctx);
         if ctx.input(|i| i.time) - self.boot_time < 0.6 {
             ctx.request_repaint_after(Duration::from_millis(16));

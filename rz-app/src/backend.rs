@@ -41,6 +41,16 @@ pub enum Evt {
     Sleeping(bool),
 }
 
+/// UI 是否在前台/可见（决定轮询频率）。前台 150ms，可见 500ms，托盘 2s。
+static UI_FOCUSED: AtomicBool = AtomicBool::new(true);
+static UI_VISIBLE: AtomicBool = AtomicBool::new(true);
+
+/// 由 UI 线程调用：窗口焦点/可见性变化
+pub fn set_ui_state(focused: bool, visible: bool) {
+    UI_FOCUSED.store(focused, Ordering::Relaxed);
+    UI_VISIBLE.store(visible, Ordering::Relaxed);
+}
+
 pub struct Backend {
     tx: Sender<Req>,
     rx: Receiver<Evt>,
@@ -150,8 +160,14 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
             Duration::from_secs(3)
         } else if fails > 0 {
             Duration::from_secs(2)
-        } else {
+        } else if UI_FOCUSED.load(Ordering::Relaxed) {
+            // 用户正盯着界面：压到 150ms，切 DPI 段后几乎立刻刷新
+            Duration::from_millis(150)
+        } else if UI_VISIBLE.load(Ordering::Relaxed) {
             Duration::from_millis(500)
+        } else {
+            // 收进托盘：只保活探针，几乎不打扰设备
+            Duration::from_secs(2)
         };
         if dev.is_some() && last_poll.elapsed() > interval {
             last_poll = Instant::now();
