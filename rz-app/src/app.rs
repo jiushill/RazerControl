@@ -46,6 +46,8 @@ pub struct App {
     pub macro_capture_idx: Option<usize>,
     /// 录制前设置的快捷键
     pub macro_record_hotkey: u8,
+    /// 录制快捷键需要的修饰键（MOD_* 掩码）
+    pub macro_record_mods: u8,
     /// 录制启动延迟（毫秒）
     pub macro_start_delay_ms: u32,
     /// 等待按一个键来填「键盘功能」步骤
@@ -117,6 +119,7 @@ impl App {
             macro_capture: false,
             macro_capture_idx: None,
             macro_record_hotkey: 0,
+            macro_record_mods: 0,
             macro_start_delay_ms: 0,
             macro_add_key: false,
             macro_target_step: None,
@@ -743,6 +746,7 @@ impl eframe::App for App {
         // 窗口有焦点时按键可能到不了全局钩子 —— 录制热键在这里兜底
         if self.macro_record_hotkey != 0 && !crate::macros::is_playing() {
             let key = self.macro_record_hotkey;
+            let need_mods = self.macro_record_mods;
             let (hit, focused_now, keys_seen) = ctx.input(|i| {
                 let mut hit = false;
                 let mut seen: Vec<u8> = Vec::new();
@@ -756,7 +760,20 @@ impl eframe::App for App {
                         }
                     }
                 }
-                (hit, i.focused, seen)
+                let mut mods = 0u8;
+                if i.modifiers.ctrl {
+                    mods |= crate::macros::MOD_CTRL;
+                }
+                if i.modifiers.shift {
+                    mods |= crate::macros::MOD_SHIFT;
+                }
+                if i.modifiers.alt {
+                    mods |= crate::macros::MOD_ALT;
+                }
+                if i.modifiers.mac_cmd || i.modifiers.command {
+                    mods |= crate::macros::MOD_WIN;
+                }
+                (hit && mods == need_mods, i.focused, seen)
             });
             if !keys_seen.is_empty() {
                 crate::hook::debug_log(&format!(

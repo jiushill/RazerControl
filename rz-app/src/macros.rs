@@ -1126,6 +1126,65 @@ pub fn store_path() -> String {
 }
 
 
+
+// ---------- 热键组合键 ----------
+pub const MOD_CTRL: u8 = 1;
+pub const MOD_SHIFT: u8 = 2;
+pub const MOD_ALT: u8 = 4;
+pub const MOD_WIN: u8 = 8;
+
+/// 这个 VK 是不是修饰键本身（单独按不算热键）
+pub fn is_modifier(vk: u8) -> bool {
+    matches!(
+        vk,
+        0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5
+    )
+}
+
+/// 当前按住的修饰键（钩子里调用，判断组合键）
+pub fn mods_now() -> u8 {
+    extern "system" {
+        fn GetAsyncKeyState(vk: i32) -> i16;
+    }
+    let down = |vk: i32| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 };
+    let mut m = 0u8;
+    if down(0x11) || down(0xA2) || down(0xA3) {
+        m |= MOD_CTRL;
+    }
+    if down(0x10) || down(0xA0) || down(0xA1) {
+        m |= MOD_SHIFT;
+    }
+    if down(0x12) || down(0xA4) || down(0xA5) {
+        m |= MOD_ALT;
+    }
+    if down(0x5B) || down(0x5C) {
+        m |= MOD_WIN;
+    }
+    m
+}
+
+/// 组合键显示名，例如 "Ctrl+Alt+R"
+pub fn combo_name(vk: u8, mods: u8) -> String {
+    if vk == 0 {
+        return "未设置".to_string();
+    }
+    let mut s = String::new();
+    if mods & MOD_CTRL != 0 {
+        s.push_str("Ctrl+");
+    }
+    if mods & MOD_SHIFT != 0 {
+        s.push_str("Shift+");
+    }
+    if mods & MOD_ALT != 0 {
+        s.push_str("Alt+");
+    }
+    if mods & MOD_WIN != 0 {
+        s.push_str("Win+");
+    }
+    s.push_str(&key_name(vk));
+    s
+}
+
 /// egui 的按键 -> Windows VK（窗口有焦点时的捕获/触发通道）
 pub fn egui_key_vk(k: egui::Key) -> Option<u8> {
     use egui::Key as K;

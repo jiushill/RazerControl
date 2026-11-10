@@ -1157,6 +1157,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 return;
             }
             crate::hook::debug_log(&format!("ui took hotkey vk=0x{vk:02X}"));
+            if M::is_modifier(vk) {
+                // 单独按修饰键不算热键，继续等
+                crate::hook::set_capture(true);
+                let now = ui.input(|i| i.time);
+                app.toast("请再按一个普通键（如 R、F9）".into(), false, now);
+                return;
+            }
             match app.macro_capture_idx {
                 Some(i) => {
                     if let Some(m) = app.macros.get_mut(i) {
@@ -1166,9 +1173,30 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     crate::hook::set_macros(app.macros.clone());
                 }
                 None => {
+                    // 组合键：记录当时按住的修饰键
+                    let mods = {
+                        let via_egui = ui.input(|i| {
+                            let mut m = 0u8;
+                            if i.modifiers.ctrl {
+                                m |= M::MOD_CTRL;
+                            }
+                            if i.modifiers.shift {
+                                m |= M::MOD_SHIFT;
+                            }
+                            if i.modifiers.alt {
+                                m |= M::MOD_ALT;
+                            }
+                            m
+                        });
+                        if via_egui != 0 {
+                            via_egui
+                        } else {
+                            M::mods_now()
+                        }
+                    };
                     app.macro_record_hotkey = vk;
-                    // 这个键是「开始/停止录制」的全局热键
-                    crate::hook::set_record_key(vk, app.macro_track_moves);
+                    app.macro_record_mods = mods;
+                    crate::hook::set_record_key(vk, mods, app.macro_track_moves);
                 }
             }
             let now = ui.input(|i| i.time);
@@ -1276,14 +1304,10 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     .font(app.ty.small.clone())
                     .color(MUTED),
             )
-            .on_hover_text("按下开始录制，再按一下停止并保存");
+            .on_hover_text("按下开始录制，再按一下停止并保存。建议用 F9 或 Ctrl+Alt+R 这类组合键");
             // 录制前就能设好：录完直接生效
             let hot = app.macro_record_hotkey;
-            let shown = if hot == 0 {
-                "未设置".to_string()
-            } else {
-                M::key_name(hot)
-            };
+            let shown = M::combo_name(hot, app.macro_record_mods);
             if widgets::ghost_button(ui, &app.ty, &shown).clicked() {
                 crate::hook::set_capture(true);
                 app.macro_capture = true;
@@ -1308,7 +1332,8 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     .clicked()
                 {
                     app.macro_record_hotkey = 0;
-                    crate::hook::set_record_key(0, app.macro_track_moves);
+                    app.macro_record_mods = 0;
+                    crate::hook::set_record_key(0, 0, app.macro_track_moves);
                 }
             }
 

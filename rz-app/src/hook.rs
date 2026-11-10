@@ -152,6 +152,8 @@ struct HookState {
     capture: bool,
     /// 「开始/停止录制」的全局热键（0 = 未设置）
     record_key: u8,
+    /// 热键需要的修饰键（MOD_* 位掩码；0 = 无修饰）
+    record_mods: u8,
     /// 用热键开始录制时，是否记录鼠标移动
     record_track_moves: bool,
     tx: Option<Sender<Req>>,
@@ -215,6 +217,7 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
                     hotkeys: Vec::new(),
                     capture: false,
                     record_key: 0,
+                    record_mods: 0,
                     record_track_moves: false,
                     tx: Some(tx),
                     swallowed: [false; 5],
@@ -259,11 +262,12 @@ fn dbg(msg: &str) {
 }
 
 /// 设置「开始/停止录制」热键
-pub fn set_record_key(vk: u8, track_moves: bool) {
+pub fn set_record_key(vk: u8, mods: u8, track_moves: bool) {
     crate::macros::set_record_hotkey(vk);
     let mut g = state_lock();
     if let Some(s) = g.as_mut() {
         s.record_key = vk;
+        s.record_mods = mods;
         s.record_track_moves = track_moves;
     }
 }
@@ -446,10 +450,15 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
             let vk = info.vk_code as u8;
             let mut hit = false;
             let mut track = false;
-            {
+            if !crate::macros::is_modifier(vk) {
+                let mods = crate::macros::mods_now();
                 let g = state_lock();
                 if let Some(st) = g.as_ref() {
-                    if st.record_key != 0 && st.record_key == vk && !st.capture {
+                    if st.record_key != 0
+                        && st.record_key == vk
+                        && st.record_mods == mods
+                        && !st.capture
+                    {
                         hit = true;
                         track = st.record_track_moves;
                     }
