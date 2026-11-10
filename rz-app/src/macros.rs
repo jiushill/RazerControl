@@ -1055,6 +1055,38 @@ pub fn store_path() -> String {
     path().to_string_lossy().to_string()
 }
 
+
+/// egui 的按键 -> Windows VK（窗口有焦点时的捕获/触发通道）
+pub fn egui_key_vk(k: egui::Key) -> Option<u8> {
+    use egui::Key as K;
+    Some(match k {
+        K::A => 0x41, K::B => 0x42, K::C => 0x43, K::D => 0x44, K::E => 0x45,
+        K::F => 0x46, K::G => 0x47, K::H => 0x48, K::I => 0x49, K::J => 0x4A,
+        K::K => 0x4B, K::L => 0x4C, K::M => 0x4D, K::N => 0x4E, K::O => 0x4F,
+        K::P => 0x50, K::Q => 0x51, K::R => 0x52, K::S => 0x53, K::T => 0x54,
+        K::U => 0x55, K::V => 0x56, K::W => 0x57, K::X => 0x58, K::Y => 0x59,
+        K::Z => 0x5A,
+        K::Num0 => 0x30, K::Num1 => 0x31, K::Num2 => 0x32, K::Num3 => 0x33,
+        K::Num4 => 0x34, K::Num5 => 0x35, K::Num6 => 0x36, K::Num7 => 0x37,
+        K::Num8 => 0x38, K::Num9 => 0x39,
+        K::F1 => 0x70, K::F2 => 0x71, K::F3 => 0x72, K::F4 => 0x73,
+        K::F5 => 0x74, K::F6 => 0x75, K::F7 => 0x76, K::F8 => 0x77,
+        K::F9 => 0x78, K::F10 => 0x79, K::F11 => 0x7A, K::F12 => 0x7B,
+        K::Space => 0x20, K::Enter => 0x0D, K::Tab => 0x09,
+        K::Escape => 0x1B, K::Backspace => 0x08, K::Delete => 0x2E,
+        K::Insert => 0x2D, K::Home => 0x24, K::End => 0x23,
+        K::PageUp => 0x21, K::PageDown => 0x22,
+        K::ArrowLeft => 0x25, K::ArrowUp => 0x26,
+        K::ArrowRight => 0x27, K::ArrowDown => 0x28,
+        K::Minus => 0xBD, K::Plus | K::Equals => 0xBB,
+        K::Comma => 0xBC, K::Period => 0xBE, K::Slash => 0xBF,
+        K::Semicolon => 0xBA, K::Quote => 0xDE,
+        K::OpenBracket => 0xDB, K::CloseBracket => 0xDD,
+        K::Backslash => 0xDC, K::Backtick => 0xC0,
+        _ => return None,
+    })
+}
+
 pub fn hotkey_map(list: &[Macro]) -> Vec<(u8, usize)> {
     list.iter()
         .enumerate()

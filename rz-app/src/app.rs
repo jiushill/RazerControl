@@ -266,6 +266,10 @@ impl App {
             }
             let name = format!("宏 {}", self.macros.len() + 1);
             let mut profile = crate::macros::Profile::default();
+            // 录制前设的快捷键和启动延迟要写进新宏，否则 hotkey_map 过滤掉 0，
+            // 这个宏永远不会被绑定 —— 表现就是"设了快捷键但按了没反应"。
+            profile.shortcut = self.macro_record_hotkey;
+            profile.start_delay_ms = self.macro_start_delay_ms;
             profile.move_mode = if self.macro_track_moves {
                 crate::macros::MoveMode::Relative
             } else {
@@ -713,6 +717,30 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // 窗口有焦点时按键不一定到得了全局钩子（实测过），这里用 egui 兜底触发
+        if ctx.input(|i| i.focused) {
+            let mut hit: Option<usize> = None;
+            ctx.input(|i| {
+                for e in &i.events {
+                    if let egui::Event::Key { key, pressed: true, .. } = e {
+                        if let Some(vk) = crate::macros::egui_key_vk(*key) {
+                            if let Some((_, idx)) =
+                                crate::macros::hotkey_map(&self.macros).iter().find(|(k, _)| *k == vk)
+                            {
+                                hit = Some(*idx);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            if let Some(i) = hit {
+                crate::hook::debug_log(&format!("hotkey trigger (focused) idx={}", i));
+                if let Some(m) = self.macros.get(i).cloned() {
+                    crate::macros::play(&m, self.macro_speed);
+                }
+            }
+        }
         // 把窗口焦点/可见性告诉后台线程（决定轮询频率）
         let focused = ctx.input(|i| i.focused);
         crate::backend::set_ui_state(focused, true);
