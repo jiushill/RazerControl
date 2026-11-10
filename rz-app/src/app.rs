@@ -48,8 +48,10 @@ pub struct App {
     pub macro_record_hotkey: u8,
     /// 录制启动延迟（毫秒）
     pub macro_start_delay_ms: u32,
-    /// 等待按一个键来添加「键盘功能」步骤
+    /// 等待按一个键来填「键盘功能」步骤
     pub macro_add_key: bool,
+    /// 待填充的按键步骤下标
+    pub macro_target_step: Option<usize>,
     /// 撤销/重做栈（按当前宏的步骤快照）
     pub macro_undo: Vec<Vec<crate::macros::Ev>>,
     pub macro_redo: Vec<Vec<crate::macros::Ev>>,
@@ -117,6 +119,7 @@ impl App {
             macro_record_hotkey: 0,
             macro_start_delay_ms: 0,
             macro_add_key: false,
+            macro_target_step: None,
             macro_undo: Vec::new(),
             macro_redo: Vec::new(),
             page: cfg.last_page.min(7),

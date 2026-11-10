@@ -1154,12 +1154,18 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             app.macro_add_key = false;
             if let Some(i) = app.macro_sel {
                 let sc = M::vk_to_scancode(vk);
+                let step = app.macro_target_step.take();
                 let mut evs = app.macros[i].events.clone();
-                evs.push(M::Ev::delay(50));
-                evs.push(M::Ev::key(sc, true));
-                evs.push(M::Ev::delay(50));
-                evs.push(M::Ev::key(sc, false));
-                app.push_macro_undo(i);
+                match step {
+                    Some(j) if j < evs.len() && evs[j].kind == M::T_KEYPRESS => {
+                        app.push_macro_undo(i);
+                        evs[j].a = sc as i32;
+                    }
+                    _ => {
+                        app.push_macro_undo(i);
+                        evs.push(M::Ev::keypress(sc as i32));
+                    }
+                }
                 app.macros[i].events = evs;
                 app.save_macros();
             }
@@ -1451,12 +1457,9 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     if ui.button("键盘功能").clicked() {
                         add_key = true;
                     }
-                    ui.menu_button("鼠标功能", |ui| {
-                        if ui.button("左键单击").clicked() {
-                            add_mouse = true;
-                            ui.close_menu();
-                        }
-                    });
+                    if ui.button("鼠标功能").clicked() {
+                        add_mouse = true;
+                    }
                     ui.add_enabled_ui(false, |ui| {
                         let _ = ui.button("宏");
                         let _ = ui.button("启动");
@@ -1542,8 +1545,8 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                         } else {
                             ui.add_space(90.0);
                             let (badge, col) = match evs[j].kind {
-                                M::T_KEYBOARD => ("键", ACCENT),
-                                M::T_MOUSE => ("鼠", INFO),
+                                M::T_KEYBOARD | M::T_KEYPRESS => ("键", ACCENT),
+                                M::T_MOUSE | M::T_ACTION => ("鼠", INFO),
                                 M::T_WHEEL => ("轮", TEXT),
                                 _ => ("移", MUTED),
                             };
@@ -1558,11 +1561,52 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 col,
                             );
                             ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(M::ev_label(&evs[j]))
+                            if evs[j].kind == M::T_ACTION && !app.macro_recording {
+                                // 雷云交互：行内下拉选择操作
+                                let cur = M::action_name(evs[j].a);
+                                let unset = evs[j].a < 0;
+                                let label = if unset {
+                                    "选择操作 ▾".to_string()
+                                } else {
+                                    format!("{} ▾", cur)
+                                };
+                                let txt = egui::RichText::new(label)
                                     .font(app.ty.small.clone())
-                                    .color(if M::ev_disabled(&evs[j]) { MUTED } else { TEXT }),
-                            );
+                                    .color(if unset { ACCENT } else { TEXT });
+                                ui.menu_button(txt, |ui| {
+                                    for (code, (name, en)) in M::ACTIONS.iter().enumerate() {
+                                        if ui
+                                            .button(*name)
+                                            .on_hover_text(*en)
+                                            .clicked()
+                                        {
+                                            evs[j].a = code as i32;
+                                            changed = true;
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            } else if evs[j].kind == M::T_KEYPRESS && !app.macro_recording {
+                                let name = if evs[j].a <= 0 {
+                                    "选择键".to_string()
+                                } else {
+                                    M::sc_name(evs[j].a as u16)
+                                };
+                                let txt = egui::RichText::new(name)
+                                    .font(app.ty.small.clone())
+                                    .color(if evs[j].a <= 0 { ACCENT } else { TEXT });
+                                if ui.button(txt).on_hover_text("点一下，然后按要用的键").clicked() {
+                                    app.macro_target_step = Some(j);
+                                    app.macro_add_key = true;
+                                    crate::hook::set_capture(true);
+                                }
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(M::ev_label(&evs[j]))
+                                        .font(app.ty.small.clone())
+                                        .color(if M::ev_disabled(&evs[j]) { MUTED } else { TEXT }),
+                                );
+                            }
                         }
 
                         if !app.macro_recording {
@@ -1610,15 +1654,24 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             app.save_macros();
         }
         if add_mouse {
+            // 和雷云一样：先插入一个未选择操作的步骤，再在行内下拉里挑动作
             app.push_macro_undo(i);
             app.macros[i].events.push(M::Ev::delay(50));
-            app.macros[i].events.push(M::Ev::mouse(M::BTN_LEFT, true));
-            app.macros[i].events.push(M::Ev::delay(50));
-            app.macros[i].events.push(M::Ev::mouse(M::BTN_LEFT, false));
+            app.macros[i]
+                .events
+                .push(M::Ev::action(M::ACT_UNSET));
             app.save_macros();
         }
     }
     if add_key {
+        // 键盘功能：插入一个"选择键"步骤，再按键捕获
+        if let Some(i) = sel {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i].events.push(M::Ev::keypress(0));
+            app.macro_target_step = Some(app.macros[i].events.len() - 1);
+            app.save_macros();
+        }
         crate::hook::set_capture(true);
         app.macro_add_key = true;
     }

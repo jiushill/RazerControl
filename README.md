@@ -276,6 +276,33 @@ Synapse 自己的日志里能直接对上（`%LOCALAPPDATA%\Razer\RazerAppEngine
 4. **回放不会被二次录制** —— 钩子忽略 `LLKHF_INJECTED` / `LLMHF_INJECTED` 事件。
    调试自动化时可用环境变量 `RC_ALLOW_INJECTED=1` 放行。
 
+### 4.5 「鼠标功能 / 键盘功能」的交互（照抄雷云）
+
+雷云的添加面板不是"点一下直接插入一个左键"，而是**先插入一个未选择的步骤**，再在行内下拉里挑：
+
+```js
+// 逆向自 dash.js 的动作表
+{id:"Click",content:"LEFT_CLICK"}   {id:"Menu",content:"RIGHT_CLICK"}
+{id:"ScrollButton",content:"SCROLL_CLICK"}  {id:"DoubleClick",content:"DOUBLE_CLICK"}
+{id:"Previous",content:"MOUSE_BUTTON_4"}    {id:"Next",content:"MOUSE_BUTTON_5"}
+{id:"ScrollLeft",content:"SCROLL_LEFT"}     {id:"ScrollRight",content:"SCROLL_RIGHT"}
+{id:"ScrollUp",content:"SCROLL_UP"}         {id:"ScrollDown",content:"SCROLL_DOWN"}
+```
+
+本项目的对应实现：
+
+| 雷云 | 本项目 |
+| --- | --- |
+| 鼠标功能 → 插入一行「选择操作」 | `kind=5`（动作步骤），`a=-1` 表示未选择，行内是下拉控件 |
+| 下拉里的 10 个动作 | `macros::ACTIONS` 表，名称完全对齐 |
+| 键盘功能 → 插入一行「选择键」 | `kind=6`（按键步骤），`a=0` 未选择，点一下再按一个键 |
+| 延迟 | `kind=0`，行内直接拖秒数 |
+
+回放时 `kind=5` 按动作码展开（含双击、横向滚动 `MOUSEWHEELF_HWHEEL`），
+`kind=6` 自动按下+抬起。录制产生的仍是原始的 `kind=1/2` 事件，与雷云录制输出同构。
+
+![宏](docs/08-macros.png)
+
 序列宏与分类宏需要多分支结构，当前只实现标准宏（UI 里置灰并标注）。
 
 存储是纯文本，与上面的 events 一一对应：

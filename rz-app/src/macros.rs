@@ -31,6 +31,35 @@ pub const T_KEYBOARD: u8 = 1;
 pub const T_MOUSE: u8 = 2;
 pub const T_MOUSE_MOVE: u8 = 3;
 pub const T_WHEEL: u8 = 4;
+/// 动作步骤（雷云「鼠标功能」）：a = 动作码，见 ACTIONS
+pub const T_ACTION: u8 = 5;
+/// 按键步骤（雷云「键盘功能」）：a = scan code，回放时自动按下+抬起
+pub const T_KEYPRESS: u8 = 6;
+
+/// 未选择任何动作（插入后的初始状态，对应雷云的「选择操作」）
+pub const ACT_UNSET: i32 = -1;
+
+/// 雷云的鼠标动作表（左键单击/右键单击/滚轮单击/鼠标按键4/5/双击/向左滚动…）
+pub const ACTIONS: [(&str, &str); 10] = [
+    ("左键单击", "LEFT_CLICK"),
+    ("右键单击", "RIGHT_CLICK"),
+    ("滚轮单击", "SCROLL_CLICK"),
+    ("鼠标按键 4", "MOUSE_BUTTON_4"),
+    ("鼠标按键 5", "MOUSE_BUTTON_5"),
+    ("双击", "DOUBLE_CLICK"),
+    ("向左滚动", "SCROLL_LEFT"),
+    ("向右滚动", "SCROLL_RIGHT"),
+    ("向上滚动", "SCROLL_UP"),
+    ("向下滚动", "SCROLL_DOWN"),
+];
+
+pub fn action_name(code: i32) -> &'static str {
+    if code < 0 || code as usize >= ACTIONS.len() {
+        "选择操作"
+    } else {
+        ACTIONS[code as usize].0
+    }
+}
 
 /// flag: 1 = 按下，2 = 抬起（与雷云一致）
 pub const FLAG_DOWN: u8 = 1;
@@ -79,6 +108,22 @@ impl Ev {
             a: btn as i32,
             b: if down { FLAG_DOWN as i32 } else { FLAG_UP as i32 },
             c: 0,
+        }
+    }
+    /// 动作步骤（雷云「鼠标功能」）：code = ACTIONS 下标，ACT_UNSET 表示未选择
+    pub fn action(code: i32) -> Self {
+        Ev {
+            kind: T_ACTION,
+            a: code,
+            ..Default::default()
+        }
+    }
+    /// 按键步骤（雷云「键盘功能」）：sc = scan code，回放时自动按下+抬起
+    pub fn keypress(sc: i32) -> Self {
+        Ev {
+            kind: T_KEYPRESS,
+            a: sc,
+            ..Default::default()
         }
     }
     pub fn wheel(delta: i32) -> Self {
@@ -500,6 +545,98 @@ fn rand_between(a: f32, b: f32) -> u32 {
 }
 
 /// 回放（新线程）。speed > 1 加速，delay_mode 覆盖录制延迟。
+fn send_input(inp: &Input) {
+    unsafe {
+        SendInput(1, inp, std::mem::size_of::<Input>() as i32);
+    }
+}
+
+fn mouse_ev(flags: u32, data: u32) {
+    let inp = Input {
+        kind: 0,
+        u: InputUnion {
+            mi: MouseInput {
+                dx: 0,
+                dy: 0,
+                mouse_data: data,
+                flags,
+                time: 0,
+                extra: 0,
+            },
+        },
+    };
+    send_input(&inp);
+}
+
+/// 0=左 1=右 2=中 3=X1 4=X2
+fn mouse_click(btn: u8) {
+    let (down, up, data) = match btn {
+        1 => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, 0),
+        2 => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0),
+        3 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 1),
+        4 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 2),
+        _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),
+    };
+    mouse_ev(down, data);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    mouse_ev(up, data);
+}
+
+const MOUSEEVENTF_HWHEEL: u32 = 0x1000;
+
+fn mouse_wheel(vertical: bool, delta: i32) {
+    let flag = if vertical {
+        MOUSEEVENTF_WHEEL
+    } else {
+        MOUSEEVENTF_HWHEEL
+    };
+    mouse_ev(flag, delta as u32);
+}
+
+fn key_event(sc: u16, down: bool) {
+    let mut flags = 0x0008; // KEYEVENTF_SCANCODE
+    if !down {
+        flags |= KEYEVENTF_KEYUP;
+    }
+    if sc & SC_EXT != 0 {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    let inp = Input {
+        kind: 1,
+        u: InputUnion {
+            ki: KeybdInput {
+                vk: 0,
+                scan: sc & 0x1FFF,
+                flags,
+                time: 0,
+                extra: 0,
+            },
+        },
+    };
+    send_input(&inp);
+}
+
+/// 执行一个雷云动作码（见 ACTIONS）
+fn play_action(code: i32, _factor: f32) {
+    match code {
+        0 => mouse_click(0),
+        1 => mouse_click(1),
+        2 => mouse_click(2),
+        3 => mouse_click(3),
+        4 => mouse_click(4),
+        5 => {
+            mouse_click(0);
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            mouse_click(0);
+        }
+        6 => mouse_wheel(false, -120),
+        7 => mouse_wheel(false, 120),
+        8 => mouse_wheel(true, 120),
+        9 => mouse_wheel(true, -120),
+        _ => {}
+    }
+}
+
 pub fn play(m: &Macro, speed: f32) {
     if m.events.is_empty() {
         return;
@@ -552,6 +689,15 @@ pub fn play(m: &Macro, speed: f32) {
                         if ms > 0 {
                             std::thread::sleep(std::time::Duration::from_millis(ms));
                         }
+                    }
+                    T_ACTION => {
+                        play_action(e.a, factor);
+                    }
+                    T_KEYPRESS => {
+                        let sc = e.a.max(0) as u16;
+                        key_event(sc, true);
+                        std::thread::sleep(std::time::Duration::from_millis(40));
+                        key_event(sc, false);
                     }
                     T_KEYBOARD => {
                         inject_scancode(e.a as u16, e.b == FLAG_DOWN as i32);
@@ -708,6 +854,12 @@ pub fn sc_name(sc: u16) -> String {
 }
 
 pub fn ev_label(e: &Ev) -> String {
+    if e.kind == T_ACTION {
+        return action_name(e.a).to_string();
+    }
+    if e.kind == T_KEYPRESS {
+        return format!("{} 按键", sc_name(e.a.max(0) as u16));
+    }
     match e.kind {
         T_DELAY => format!("延迟 {:.3}s", e.a.max(0) as f32 / 1000.0),
         T_KEYBOARD => format!(
