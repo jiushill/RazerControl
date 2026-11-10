@@ -257,6 +257,29 @@ impl App {
     }
 
     /// 结束录制并把结果存进列表
+    /// 把录好的事件落成一个宏（按钮停止与热键停止共用）
+    pub fn finish_recording(&mut self, events: Vec<crate::macros::Ev>, origin: (i32, i32)) {
+        if events.is_empty() {
+            return;
+        }
+        let name = format!("宏 {}", self.macros.len() + 1);
+        let mut profile = crate::macros::Profile::default();
+        profile.start_delay_ms = self.macro_start_delay_ms;
+        profile.move_mode = if self.macro_track_moves {
+            crate::macros::MoveMode::Relative
+        } else {
+            crate::macros::MoveMode::None
+        };
+        self.macros.push(crate::macros::Macro {
+            name: name.clone(),
+            events,
+            origin,
+            profile,
+        });
+        self.save_macros();
+        self.macro_sel = Some(self.macros.len() - 1);
+    }
+
     pub fn macro_finish(&mut self, now: f64) {
         self.macro_recording = false;
         if let Some((events, origin)) = crate::macros::stop_recording() {
@@ -717,29 +740,54 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // 窗口有焦点时按键不一定到得了全局钩子（实测过），这里用 egui 兜底触发
-        if ctx.input(|i| i.focused) {
-            let mut hit: Option<usize> = None;
-            ctx.input(|i| {
+        // 窗口有焦点时按键可能到不了全局钩子 —— 录制热键在这里兜底
+        if self.macro_record_hotkey != 0 {
+            let key = self.macro_record_hotkey;
+            let (hit, focused_now, keys_seen) = ctx.input(|i| {
+                let mut hit = false;
+                let mut seen: Vec<u8> = Vec::new();
                 for e in &i.events {
-                    if let egui::Event::Key { key, pressed: true, .. } = e {
-                        if let Some(vk) = crate::macros::egui_key_vk(*key) {
-                            if let Some((_, idx)) =
-                                crate::macros::hotkey_map(&self.macros).iter().find(|(k, _)| *k == vk)
-                            {
-                                hit = Some(*idx);
-                                break;
+                    if let egui::Event::Key { key: k, pressed: true, .. } = e {
+                        if let Some(vk) = crate::macros::egui_key_vk(*k) {
+                            seen.push(vk);
+                            if vk == key {
+                                hit = true;
                             }
                         }
                     }
                 }
+                (hit, i.focused, seen)
             });
-            if let Some(i) = hit {
-                crate::hook::debug_log(&format!("hotkey trigger (focused) idx={}", i));
-                if let Some(m) = self.macros.get(i).cloned() {
-                    crate::macros::play(&m, self.macro_speed);
+            if !keys_seen.is_empty() {
+                crate::hook::debug_log(&format!(
+                    "update keys={:02X?} focused={} rec_key=0x{key:02X} hit={}",
+                    keys_seen, focused_now, hit
+                ));
+            }
+            if hit {
+                if crate::macros::is_recording() {
+                    if let Some(r) = crate::macros::stop_recording() {
+                        self.macro_recording = false;
+                        let (events, origin) = r;
+                        self.finish_recording(events, origin);
+                        let n = self.macros.len();
+                        let now = ctx.input(|i| i.time);
+                        self.toast(format!("已保存第 {} 个宏", n), true, now);
+                    }
+                } else {
+                    crate::macros::start_recording(self.macro_track_moves);
+                    self.macro_recording = true;
                 }
             }
+        }
+
+        // 热键录制结束：把结果落成宏
+        if let Some((events, origin)) = crate::macros::take_finished() {
+            self.macro_recording = false;
+            self.finish_recording(events, origin);
+        }
+        if crate::macros::is_recording() && !self.macro_recording {
+            self.macro_recording = true;
         }
         // 把窗口焦点/可见性告诉后台线程（决定轮询频率）
         let focused = ctx.input(|i| i.focused);

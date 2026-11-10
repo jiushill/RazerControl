@@ -278,6 +278,19 @@ fn playing_lock() -> std::sync::MutexGuard<'static, bool> {
     PLAYING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+static PENDING: Mutex<Option<(Vec<Ev>, (i32, i32))>> = Mutex::new(None);
+
+/// 热键停止录制后，把结果暂存起来交给 UI 线程存盘
+pub fn stash_finished(r: (Vec<Ev>, (i32, i32))) {
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    *g = Some(r);
+}
+
+pub fn take_finished() -> Option<(Vec<Ev>, (i32, i32))> {
+    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    g.take()
+}
+
 pub fn is_recording() -> bool {
     rec_lock().is_some()
 }
@@ -297,6 +310,7 @@ pub fn event_count() -> usize {
 }
 
 pub fn start_recording(track_moves: bool) {
+    crate::hook::debug_log(&format!("start_recording track={track_moves}"));
     {
         let mut g = rec_lock();
         *g = Some(Rec {
@@ -312,6 +326,7 @@ pub fn start_recording(track_moves: bool) {
 pub fn stop_recording() -> Option<(Vec<Ev>, (i32, i32))> {
     rec_lock().take().map(|mut r| {
         strip_stop_clicks(&mut r.events);
+        crate::hook::debug_log(&format!("stop_recording events={}", r.events.len()));
         (r.events, r.origin)
     })
 }
@@ -638,6 +653,11 @@ fn play_action(code: i32, _factor: f32) {
 }
 
 pub fn play(m: &Macro, speed: f32) {
+    crate::hook::debug_log(&format!(
+        "play start name={} events={}",
+        m.name,
+        m.events.len()
+    ));
     if m.events.is_empty() {
         return;
     }

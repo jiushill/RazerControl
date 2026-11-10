@@ -1142,7 +1142,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
         // 捕获期间连续重绘：request_repaint_after 在窗口失焦时会被系统拖后，
         // 导致"按了键要等一会儿才认"。
         ui.ctx().request_repaint();
-        if let Some(vk) = crate::hook::take_captured().or_else(|| egui_pressed_vk(ui)) {
+        let from_hook = crate::hook::take_captured();
+        let from_egui = if from_hook.is_none() { egui_pressed_vk(ui) } else { None };
+        if let Some(vk) = from_hook.or(from_egui) {
+            crate::hook::debug_log(&format!(
+                "capture via {} vk=0x{vk:02X}",
+                if from_hook.is_some() { "hook" } else { "egui" }
+            ));
             app.macro_capture = false;
             if vk == 0x1B {
                 // Esc 取消捕获，不占用快捷键
@@ -1159,7 +1165,11 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     let _ = M::save_all(&app.macros);
                     crate::hook::set_macros(app.macros.clone());
                 }
-                None => app.macro_record_hotkey = vk,
+                None => {
+                    app.macro_record_hotkey = vk;
+                    // 这个键是「开始/停止录制」的全局热键
+                    crate::hook::set_record_key(vk, app.macro_track_moves);
+                }
             }
             let now = ui.input(|i| i.time);
             app.toast(format!("快捷键：{}", M::key_name(vk)), true, now);
@@ -1168,7 +1178,9 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     // 「键盘功能」：捕获一个键作为新步骤
     if app.macro_add_key {
         ui.ctx().request_repaint();
-        if let Some(vk) = crate::hook::take_captured().or_else(|| egui_pressed_vk(ui)) {
+        let from_hook2 = crate::hook::take_captured();
+        let from_egui2 = if from_hook2.is_none() { egui_pressed_vk(ui) } else { None };
+        if let Some(vk) = from_hook2.or(from_egui2) {
             app.macro_add_key = false;
             if let Some(i) = app.macro_sel {
                 let sc = M::vk_to_scancode(vk);
@@ -1259,7 +1271,12 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             }
 
             ui.add_space(22.0);
-            ui.label(egui::RichText::new("快捷键").font(app.ty.small.clone()).color(MUTED));
+            ui.label(
+                egui::RichText::new("录制热键")
+                    .font(app.ty.small.clone())
+                    .color(MUTED),
+            )
+            .on_hover_text("按下开始录制，再按一下停止并保存");
             // 录制前就能设好：录完直接生效
             let hot = app.macro_record_hotkey;
             let shown = if hot == 0 {
@@ -1272,7 +1289,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 app.macro_capture = true;
                 app.macro_capture_idx = None;
             }
-            if app.macro_capture && app.macro_capture_idx.is_none() {
+            if false && hot != 0 && !app.macro_capture {
+                ui.label(
+                    egui::RichText::new("（还没有宏，按这个键不会有动作）")
+                        .font(app.ty.tiny.clone())
+                        .color(WARN),
+                );
+            } else if app.macro_capture && app.macro_capture_idx.is_none() {
                 ui.label(
                     egui::RichText::new("请按键…（Esc 取消）")
                         .font(app.ty.tiny.clone())
@@ -1285,6 +1308,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     .clicked()
                 {
                     app.macro_record_hotkey = 0;
+                    crate::hook::set_record_key(0, app.macro_track_moves);
                 }
             }
 
@@ -1420,24 +1444,6 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             ui.add_space(18.0);
 
             if let Some(i) = sel {
-                // 当前宏的快捷键（可直接改绑）
-                let cur = app.macros[i].profile.shortcut;
-                let label = if cur == 0 {
-                    "快捷键 未设置".to_string()
-                } else {
-                    format!("快捷键 {}", M::key_name(cur))
-                };
-                if ui.small_button(label).clicked() {
-                    app.macro_capture_idx = Some(i);
-                    app.macro_capture = true;
-                    crate::hook::set_capture(true);
-                }
-                if cur != 0 && ui.small_button("✕").on_hover_text("清除").clicked() {
-                    app.push_macro_undo(i);
-                    app.macros[i].profile.shortcut = 0;
-                    app.save_macros();
-                }
-                ui.add_space(14.0);
                 let mut mode = app.macros[i].profile.delay_mode;
                 let label = match mode {
                     DelayMode::Recorded => "录制延迟",

@@ -150,6 +150,10 @@ struct HookState {
     hotkeys: Vec<(u8, usize)>,
     /// 正在等待用户按下快捷键
     capture: bool,
+    /// 「开始/停止录制」的全局热键（0 = 未设置）
+    record_key: u8,
+    /// 用热键开始录制时，是否记录鼠标移动
+    record_track_moves: bool,
     tx: Option<Sender<Req>>,
     swallowed: [bool; 5],
 }
@@ -210,6 +214,8 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
                     macros: Vec::new(),
                     hotkeys: Vec::new(),
                     capture: false,
+                    record_key: 0,
+                    record_track_moves: false,
                     tx: Some(tx),
                     swallowed: [false; 5],
                 })
@@ -249,6 +255,15 @@ fn dbg(msg: &str) {
         {
             let _ = writeln!(f, "[{:>7}ms] {msg}", dbg_ts());
         }
+    }
+}
+
+/// 设置「开始/停止录制」热键
+pub fn set_record_key(vk: u8, track_moves: bool) {
+    let mut g = state_lock();
+    if let Some(s) = g.as_mut() {
+        s.record_key = vk;
+        s.record_track_moves = track_moves;
     }
 }
 
@@ -432,6 +447,36 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
                     sc |= m::SC_EXT;
                 }
                 m::push_key(sc, is_down);
+            }
+        }
+    }
+
+    // 录制热键：按一下开始录，再按一下停止并交回 UI 保存
+    if code >= 0 {
+        let info = &*(l as *const KbdHookStruct);
+        let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+        if is_down && !injected_blocked(info.flags, LLKHF_INJECTED) {
+            let vk = info.vk_code as u8;
+            let mut hit = false;
+            let mut track = false;
+            {
+                let g = state_lock();
+                if let Some(st) = g.as_ref() {
+                    if st.record_key != 0 && st.record_key == vk && !st.capture {
+                        hit = true;
+                        track = st.record_track_moves;
+                    }
+                }
+            }
+            if hit {
+                if crate::macros::is_recording() {
+                    if let Some(r) = crate::macros::stop_recording() {
+                        crate::macros::stash_finished(r);
+                    }
+                } else {
+                    crate::macros::start_recording(track);
+                }
+                return 1; // 吞掉，别让这个键同时打到游戏里
             }
         }
     }
