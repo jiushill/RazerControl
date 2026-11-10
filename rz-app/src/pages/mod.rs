@@ -1121,52 +1121,75 @@ fn btn_name(i: usize) -> &'static str {
 
 // ---------------- 宏 ----------------
 pub fn macros(app: &mut App, ui: &mut Ui) {
-    use crate::macros::{DelayMode, MoveMode};
+    use crate::macros as M;
+    use crate::macros::DelayMode;
 
-    page_head(app, ui, "宏", "模型与参数对齐 Razer Synapse（软件层）");
-    if app.macro_recording {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
-    }
-    // 快捷键捕获轮询
+    page_head(app, ui, "宏", "记录键盘与鼠标动作，数据模型对齐 Razer Synapse");
+
+    // 快捷键捕获（录制前设置 / 编辑器里改绑）
     if app.macro_capture {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(120));
         if let Some(vk) = crate::hook::take_captured() {
-            if let Some(i) = app.macro_sel {
-                if let Some(m) = app.macros.get_mut(i) {
-                    m.profile.shortcut = vk;
-                    let _ = crate::macros::save_all(&app.macros);
-                    crate::hook::set_macros(app.macros.clone());
-                    app.toast(
-                        format!("快捷键已设为 {}", crate::macros::key_name(vk)),
-                        true,
-                        ui.input(|i| i.time),
-                    );
-                }
-            }
             app.macro_capture = false;
+            match app.macro_capture_idx {
+                Some(i) => {
+                    if let Some(m) = app.macros.get_mut(i) {
+                        m.profile.shortcut = vk;
+                    }
+                    let _ = M::save_all(&app.macros);
+                    crate::hook::set_macros(app.macros.clone());
+                }
+                None => app.macro_record_hotkey = vk,
+            }
+            let now = ui.input(|i| i.time);
+            app.toast(format!("快捷键：{}", M::key_name(vk)), true, now);
         }
     }
+    // 「键盘功能」：捕获一个键作为新步骤
+    if app.macro_add_key {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(120));
+        if let Some(vk) = crate::hook::take_captured() {
+            app.macro_add_key = false;
+            if let Some(i) = app.macro_sel {
+                let sc = M::vk_to_scancode(vk);
+                let mut evs = app.macros[i].events.clone();
+                evs.push(M::Ev::delay(50));
+                evs.push(M::Ev::key(sc, true));
+                evs.push(M::Ev::delay(50));
+                evs.push(M::Ev::key(sc, false));
+                app.push_macro_undo(i);
+                app.macros[i].events = evs;
+                app.save_macros();
+            }
+        }
+    }
+    if app.macro_recording {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(120));
+    }
 
-    // ---- 录制状态 ----
-    theme::card(ui, CardStyle::new().pad(20.0), |ui| {
+    // ================= 录制条 =================
+    theme::card(ui, CardStyle::new().pad(18.0), |ui| {
         ui.horizontal(|ui| {
-            let recording = app.macro_recording;
+            let rec = app.macro_recording;
+            let live = M::recording_snapshot();
             ui.vertical(|ui| {
                 ui.label(
-                    egui::RichText::new(if recording { "录制中…" } else { "就绪" })
+                    egui::RichText::new(if rec { "录制中" } else { "就绪" })
                         .font(app.ty.h2.clone())
-                        .color(if recording { WARN } else { TEXT }),
+                        .color(if rec { WARN } else { TEXT }),
                 );
                 ui.add_space(2.0);
-                let detail = if recording {
+                let detail = if rec {
                     format!(
-                        "已记录 {} 条（含延迟事件），点右边结束",
-                        crate::macros::event_count()
+                        "已记录 {} 步 · 合计 {:.2} s（下方列表实时显示）",
+                        live.len(),
+                        M::total_ms(&live) as f32 / 1000.0
                     )
                 } else {
-                    "录制会按雷云的方式存：延迟事件 + 按键事件交替".to_string()
+                    "点开始录制，之后按下的键和鼠标动作会被实时记录".to_string()
                 };
                 ui.label(
                     egui::RichText::new(detail)
@@ -1175,7 +1198,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if app.macro_recording {
+                if rec {
                     if widgets::accent_button(ui, &app.ty, "停止并保存").clicked() {
                         app.macro_finish(ui.input(|i| i.time));
                     }
@@ -1183,26 +1206,60 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     crate::macros::start_recording(app.macro_track_moves);
                     app.macro_recording = true;
                     app.macro_capture = false;
+                    app.macro_add_key = false;
                 }
             });
         });
 
         ui.add_space(10.0);
         divider(ui);
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("启动延迟").font(app.ty.small.clone()).color(MUTED));
+            let mut secs = app.macro_start_delay_ms as f64 / 1000.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut secs)
+                        .speed(0.01)
+                        .range(0.0..=60.0)
+                        .suffix(" s"),
+                )
+                .changed()
+            {
+                app.macro_start_delay_ms = (secs * 1000.0).round().max(0.0) as u32;
+            }
+
+            ui.add_space(22.0);
+            ui.label(egui::RichText::new("快捷键").font(app.ty.small.clone()).color(MUTED));
+            // 录制前就能设好：录完直接生效
+            let hot = app.macro_record_hotkey;
+            let shown = if hot == 0 {
+                "未设置".to_string()
+            } else {
+                M::key_name(hot)
+            };
+            if widgets::ghost_button(ui, &app.ty, &shown).clicked() {
+                crate::hook::set_capture(true);
+                app.macro_capture = true;
+                app.macro_capture_idx = None;
+            }
+            if app.macro_capture && app.macro_capture_idx.is_none() {
+                ui.label(
+                    egui::RichText::new("请按键…")
+                        .font(app.ty.tiny.clone())
+                        .color(WARN),
+                );
+            }
+
+            ui.add_space(22.0);
+            ui.checkbox(&mut app.macro_track_moves, "录制鼠标移动");
+        });
+
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let mut track = app.macro_track_moves;
-            if ui.checkbox(&mut track, "录制鼠标移动").changed() {
-                app.macro_track_moves = track;
-            }
-            ui.add_space(18.0);
-            ui.label(
-                egui::RichText::new("回放速度")
-                    .font(app.ty.small.clone())
-                    .color(MUTED),
-            );
+            ui.label(egui::RichText::new("回放速度").font(app.ty.small.clone()).color(MUTED));
             let mut sp = app.macro_speed;
-            let w = ui.available_width().min(220.0);
             widgets::slider(
                 ui,
                 egui::Id::new("macro_speed"),
@@ -1210,7 +1267,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 0.25,
                 4.0,
                 0.25,
-                w,
+                180.0,
                 ACCENT,
             );
             app.macro_speed = sp;
@@ -1222,10 +1279,62 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
         });
     });
 
-    ui.add_space(12.0);
+    ui.add_space(10.0);
 
-    // ---- 宏列表 ----
-    if app.macros.is_empty() {
+    // ================= 宏选择 =================
+    theme::card(ui, CardStyle::new().pad(14.0), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("宏").font(app.ty.small.clone()).color(MUTED));
+            ui.add_space(6.0);
+            let mut pick = None;
+            for (i, m) in app.macros.iter().enumerate() {
+                let on = app.macro_sel == Some(i);
+                if widgets::ghost_button(ui, &app.ty, &m.name).clicked() {
+                    pick = Some(i);
+                }
+                if on {
+                    ui.label(egui::RichText::new("●").color(ACCENT).font(app.ty.tiny.clone()));
+                }
+                ui.add_space(4.0);
+            }
+            if let Some(i) = pick {
+                app.macro_sel = Some(i);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::ghost_button(ui, &app.ty, "删除").clicked() {
+                    if let Some(i) = app.macro_sel {
+                        app.macros.remove(i);
+                        app.macro_sel = if app.macros.is_empty() {
+                            None
+                        } else {
+                            Some(i.min(app.macros.len() - 1))
+                        };
+                        app.save_macros();
+                    }
+                }
+                if widgets::accent_button(ui, &app.ty, "新建").clicked() {
+                    let n = app.macros.len() + 1;
+                    let mut p = crate::macros::Profile::default();
+                    p.shortcut = app.macro_record_hotkey;
+                    p.start_delay_ms = app.macro_start_delay_ms;
+                    app.macros.push(crate::macros::Macro {
+                        name: format!("宏 {}", n),
+                        events: Vec::new(),
+                        origin: (0, 0),
+                        profile: p,
+                    });
+                    app.macro_sel = Some(app.macros.len() - 1);
+                    app.save_macros();
+                }
+            });
+        });
+    });
+
+    ui.add_space(10.0);
+
+    // ================= 编辑器 =================
+    let editing = app.macro_recording || app.macro_sel.is_some();
+    if !editing {
         theme::card(ui, CardStyle::new().pad(20.0), |ui| {
             ui.label(
                 egui::RichText::new("还没有宏")
@@ -1235,223 +1344,195 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "录好的宏存在 {}，纯文本可手动编辑",
+                    "点「开始录制」或「新建」。存储位置：{}",
                     crate::macros::store_path()
                 ))
                 .font(app.ty.small.clone())
                 .color(MUTED),
             );
         });
+        return;
+    }
+
+    let sel = app.macro_sel;
+    let live = if app.macro_recording {
+        M::recording_snapshot()
     } else {
-        let mut to_delete: Option<usize> = None;
-        let mut to_play: Option<usize> = None;
-        let mut toggled: Option<usize> = None;
-        let mut edited: Option<usize> = None;
+        Vec::new()
+    };
 
-        for i in 0..app.macros.len() {
-            let name = app.macros[i].name.clone();
-            let summary = app.macros[i].summary();
-            let expanded = app.macro_sel == Some(i);
-            theme::card(ui, CardStyle::new(), |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(&name)
-                                .font(app.ty.h2.clone())
-                                .color(TEXT),
-                        );
-                        ui.label(
-                            egui::RichText::new(&summary)
-                                .font(app.ty.tiny.clone())
-                                .color(MUTED),
-                        );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if widgets::ghost_button(ui, &app.ty, "删除").clicked() {
-                            to_delete = Some(i);
-                        }
-                        ui.add_space(6.0);
-                        if widgets::ghost_button(ui, &app.ty, "回放").clicked() {
-                            to_play = Some(i);
-                        }
-                        ui.add_space(6.0);
-                        if widgets::ghost_button(ui, &app.ty, if expanded { "收起" } else { "编辑" })
-                            .clicked()
-                        {
-                            toggled = Some(i);
-                        }
-                    });
+    let mut add_delay = false;
+    let mut add_key = false;
+    let mut add_mouse = false;
+    let mut undo = false;
+    let mut redo = false;
+    let mut save = false;
+
+    let (_, _) = theme::card(ui, CardStyle::new().pad(16.0), |ui| {
+        // ---- 工具条 ----
+        let total = if app.macro_recording {
+            M::total_ms(&live)
+        } else {
+            sel.map(|i| M::total_ms(&app.macros[i].events)).unwrap_or(0)
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{:.3}s", total as f32 / 1000.0))
+                    .font(app.ty.mono.clone())
+                    .color(TEXT),
+            );
+            ui.add_space(18.0);
+
+            if let Some(i) = sel {
+                let mut mode = app.macros[i].profile.delay_mode;
+                let label = match mode {
+                    DelayMode::Recorded => "录制延迟",
+                    DelayMode::Fixed => "固定延迟",
+                    DelayMode::Random => "随机延迟",
+                    DelayMode::None => "无延迟",
+                };
+                ui.menu_button(format!("{} ▾", label), |ui| {
+                    if ui.button("录制延迟").clicked() {
+                        mode = DelayMode::Recorded;
+                        ui.close_menu();
+                    }
+                    if ui.button("固定延迟").clicked() {
+                        mode = DelayMode::Fixed;
+                        ui.close_menu();
+                    }
+                    if ui.button("随机延迟").clicked() {
+                        mode = DelayMode::Random;
+                        ui.close_menu();
+                    }
+                    if ui.button("无延迟").clicked() {
+                        mode = DelayMode::None;
+                        ui.close_menu();
+                    }
                 });
+                if mode != app.macros[i].profile.delay_mode {
+                    app.push_macro_undo(i);
+                    app.macros[i].profile.delay_mode = mode;
+                    app.save_macros();
+                }
+            }
 
-                if !expanded {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::accent_button(ui, &app.ty, "保存").clicked() {
+                    save = true;
+                }
+                ui.add_space(6.0);
+                if widgets::ghost_button(ui, &app.ty, "重做").clicked() {
+                    redo = true;
+                }
+                if widgets::ghost_button(ui, &app.ty, "撤销").clicked() {
+                    undo = true;
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+        divider(ui);
+        ui.add_space(8.0);
+
+        ui.horizontal_top(|ui| {
+            // ---- 左：添加 ----
+            if !app.macro_recording {
+                ui.vertical(|ui| {
+                    ui.set_width(150.0);
+                    ui.label(
+                        egui::RichText::new("添加")
+                            .font(app.ty.small.clone())
+                            .color(MUTED),
+                    );
+                    ui.add_space(6.0);
+                    if ui.button("延迟").clicked() {
+                        add_delay = true;
+                    }
+                    if ui.button("键盘功能").clicked() {
+                        add_key = true;
+                    }
+                    ui.menu_button("鼠标功能", |ui| {
+                        if ui.button("左键单击").clicked() {
+                            add_mouse = true;
+                            ui.close_menu();
+                        }
+                    });
+                    ui.add_enabled_ui(false, |ui| {
+                        let _ = ui.button("宏");
+                        let _ = ui.button("启动");
+                        let _ = ui.button("运行命令");
+                        let _ = ui.button("文本功能");
+                        let _ = ui.button("循环");
+                    })
+                    .response
+                    .on_hover_text("这些类型暂未实现");
+                });
+                ui.add_space(10.0);
+                let _ = ui.separator();
+            }
+
+            // ---- 右：步骤列表 ----
+            ui.vertical(|ui| {
+                let evs_view = if app.macro_recording {
+                    live.clone()
+                } else {
+                    sel.map(|i| app.macros[i].events.clone()).unwrap_or_default()
+                };
+                if evs_view.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(if app.macro_recording {
+                            "等待你的第一个动作…"
+                        } else {
+                            "还没有步骤。左边「添加」或直接录制。"
+                        })
+                        .font(app.ty.small.clone())
+                        .color(MUTED),
+                    );
                     return;
                 }
 
-                ui.add_space(10.0);
-                divider(ui);
-                ui.add_space(8.0);
-
-                // ---------- 参数面板（对齐 recordProfile）----------
-                let mut prof = app.macros[i].profile;
                 let mut changed = false;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("启动延迟").font(app.ty.small.clone()).color(MUTED));
-                    let mut secs = prof.start_delay_ms as f64 / 1000.0;
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut secs)
-                                .speed(0.01)
-                                .range(0.0..=60.0)
-                                .suffix(" s"),
-                        )
-                        .changed()
-                    {
-                        prof.start_delay_ms = (secs * 1000.0).round().max(0.0) as u32;
-                        changed = true;
-                    }
-                    ui.add_space(24.0);
-                    ui.label(egui::RichText::new("快捷键").font(app.ty.small.clone()).color(MUTED));
-                    let label = if prof.shortcut == 0 {
-                        "未设置".to_string()
-                    } else {
-                        crate::macros::key_name(prof.shortcut)
-                    };
-                    if widgets::ghost_button(ui, &app.ty, &label).clicked() {
-                        crate::hook::set_capture(true);
-                        app.macro_capture = true;
-                    }
-                    if prof.shortcut != 0 && widgets::ghost_button(ui, &app.ty, "清除").clicked() {
-                        prof.shortcut = 0;
-                        changed = true;
-                    }
-                    if app.macro_capture {
-                        ui.label(
-                            egui::RichText::new("请按一个键…")
-                                .font(app.ty.tiny.clone())
-                                .color(WARN),
-                        );
-                    }
-                });
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("宏类型").font(app.ty.small.clone()).color(MUTED));
-                    ui.radio_value(&mut prof.macro_type, 0u8, "标准宏");
-                    ui.add_enabled_ui(false, |ui| {
-                        ui.radio_value(&mut prof.macro_type, 1u8, "序列宏");
-                        ui.radio_value(&mut prof.macro_type, 2u8, "分类宏");
-                    })
-                    .response
-                    .on_hover_text("序列/分类需要多分支结构，当前版本只实现标准宏");
-                });
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("延迟设置").font(app.ty.small.clone()).color(MUTED));
-                    ui.radio_value(&mut prof.delay_mode, DelayMode::Recorded, "录制延迟");
-                    ui.radio_value(&mut prof.delay_mode, DelayMode::Fixed, "固定");
-                    ui.radio_value(&mut prof.delay_mode, DelayMode::Random, "随机");
-                    ui.radio_value(&mut prof.delay_mode, DelayMode::None, "无延迟");
-                });
-                if prof.delay_mode == DelayMode::Fixed {
-                    ui.horizontal(|ui| {
-                        ui.add_space(78.0);
-                        let mut v = prof.delay_time as f64;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut v)
-                                    .speed(0.01)
-                                    .range(0.0..=60.0)
-                                    .suffix(" s"),
-                            )
-                            .changed()
-                        {
-                            prof.delay_time = v as f32;
-                            changed = true;
-                        }
-                    });
-                } else if prof.delay_mode == DelayMode::Random {
-                    ui.horizontal(|ui| {
-                        ui.add_space(78.0);
-                        let mut lo = prof.rand_min as f64;
-                        let mut hi = prof.rand_max as f64;
-                        let a = ui.add(
-                            egui::DragValue::new(&mut lo)
-                                .speed(0.01)
-                                .range(0.0..=60.0)
-                                .suffix(" s"),
-                        );
-                        ui.label("~");
-                        let b = ui.add(
-                            egui::DragValue::new(&mut hi)
-                                .speed(0.01)
-                                .range(0.0..=60.0)
-                                .suffix(" s"),
-                        );
-                        if a.changed() || b.changed() {
-                            prof.rand_min = lo as f32;
-                            prof.rand_max = hi as f32;
-                            changed = true;
-                        }
-                    });
-                }
-
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("移动追踪").font(app.ty.small.clone()).color(MUTED));
-                    ui.radio_value(&mut prof.move_mode, MoveMode::None, "无");
-                    ui.radio_value(&mut prof.move_mode, MoveMode::Absolute, "屏幕");
-                    ui.radio_value(&mut prof.move_mode, MoveMode::Relative, "前台");
-                    ui.radio_value(&mut prof.move_mode, MoveMode::Origin, "起始点");
-                });
-
-                if changed {
-                    app.macros[i].profile = prof;
-                    edited = Some(i);
-                }
-
-                // ---------- 事件列表 ----------
-                ui.add_space(10.0);
-                divider(ui);
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "共 {} 条事件（延迟是独立事件，和雷云一致）",
-                        app.macros[i].events.len()
-                    ))
-                    .font(app.ty.tiny.clone())
-                    .color(MUTED),
-                );
-                ui.add_space(4.0);
-
-                let mut evs = app.macros[i].events.clone();
-                let mut ev_changed = false;
                 let mut remove: Option<usize> = None;
-                for j in 0..evs.len() {
+                let mut evs = evs_view.clone();
+                // 长宏（例如开着鼠标移动追踪）只渲染前 400 行，避免每帧卡顿
+                let shown = evs.len().min(400);
+                if evs.len() > shown {
+                    ui.label(
+                        egui::RichText::new(format!("共 {} 步，仅显示前 {} 步", evs.len(), shown))
+                            .font(app.ty.tiny.clone())
+                            .color(MUTED),
+                    );
+                }
+                for j in 0..shown {
                     ui.horizontal(|ui| {
-                        let color = match evs[j].kind {
-                            crate::macros::T_DELAY => MUTED,
-                            crate::macros::T_KEYBOARD => ACCENT,
-                            crate::macros::T_MOUSE => TEXT,
-                            crate::macros::T_WHEEL => INFO,
-                            _ => MUTED,
-                        };
-                        // 延迟事件可直接改秒数
-                        if evs[j].kind == crate::macros::T_DELAY {
-                            // 延迟行直接显示可编辑秒数（和雷云编辑器一致，不重复标签）
-                            let mut secs = evs[j].a.max(0) as f64 / 1000.0;
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut secs)
-                                        .speed(0.005)
-                                        .range(0.0..=60.0)
-                                        .suffix(" s"),
-                                )
-                                .changed()
-                            {
-                                evs[j].a = (secs * 1000.0).round() as i32;
-                                ev_changed = true;
+                        if app.macro_recording {
+                            // 录制中：只读，显示真实动作
+                        } else {
+                            let mut on = !M::ev_disabled(&evs[j]);
+                            if ui.checkbox(&mut on, "").changed() {
+                                M::ev_set_disabled(&mut evs[j], !on);
+                                changed = true;
                             }
+                        }
+
+                        if evs[j].kind == M::T_DELAY {
+                            let mut secs = evs[j].a.max(0) as f64 / 1000.0;
+                            ui.add_enabled_ui(!app.macro_recording, |ui| {
+                                if ui
+                                    .add_sized(
+                                        [86.0, 20.0],
+                                        egui::DragValue::new(&mut secs)
+                                            .speed(0.005)
+                                            .range(0.0..=60.0)
+                                            .suffix(" s"),
+                                    )
+                                    .changed()
+                                {
+                                    evs[j].a = (secs * 1000.0).round() as i32;
+                                    changed = true;
+                                }
+                            });
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new("延迟")
@@ -1459,75 +1540,114 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                     .color(MUTED),
                             );
                         } else {
-                            ui.add_space(76.0);
+                            ui.add_space(90.0);
+                            let (badge, col) = match evs[j].kind {
+                                M::T_KEYBOARD => ("键", ACCENT),
+                                M::T_MOUSE => ("鼠", INFO),
+                                M::T_WHEEL => ("轮", TEXT),
+                                _ => ("移", MUTED),
+                            };
+                            let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                            ui.painter()
+                                .rect_filled(rect, Rounding::same(4.0), alpha(col, 36));
+                            ui.painter().text(
+                                rect.center(),
+                                Align2::CENTER_CENTER,
+                                badge,
+                                FontId::proportional(10.0),
+                                col,
+                            );
+                            ui.add_space(6.0);
                             ui.label(
-                                egui::RichText::new(crate::macros::ev_label(&evs[j]))
+                                egui::RichText::new(M::ev_label(&evs[j]))
                                     .font(app.ty.small.clone())
-                                    .color(color),
+                                    .color(if M::ev_disabled(&evs[j]) { MUTED } else { TEXT }),
                             );
                         }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button("✕").on_hover_text("删除这一条").clicked() {
-                                remove = Some(j);
-                            }
-                        });
+
+                        if !app.macro_recording {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("✕").on_hover_text("删除这一步").clicked() {
+                                    remove = Some(j);
+                                }
+                            });
+                        }
                     });
                 }
-                // 循环外删除，避免边遍历边删导致越界
+
                 if let Some(j) = remove {
                     evs.remove(j);
-                    ev_changed = true;
+                    // 合并相邻的两个延迟步骤
+                    let mut k = 0;
+                    while k + 1 < evs.len() {
+                        if evs[k].kind == M::T_DELAY && evs[k + 1].kind == M::T_DELAY {
+                            let add = evs[k + 1].a.max(0);
+                            evs[k].a = evs[k].a.saturating_add(add);
+                            evs.remove(k + 1);
+                        } else {
+                            k += 1;
+                        }
+                    }
+                    changed = true;
                 }
-                if ev_changed {
-                    app.macros[i].events = evs;
-                    edited = Some(i);
+
+                if changed {
+                    if let Some(i) = sel {
+                        app.push_macro_undo(i);
+                        app.macros[i].events = evs;
+                        app.save_macros();
+                    }
                 }
             });
-            ui.add_space(8.0);
-        }
+        });
+    });
 
-        if let Some(i) = toggled {
-            app.macro_sel = if app.macro_sel == Some(i) { None } else { Some(i) };
+    // ---- 延迟处理动作 ----
+    if let Some(i) = sel {
+        if add_delay {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(100));
+            app.save_macros();
         }
-        if let Some(i) = to_play {
-            crate::macros::play(&app.macros[i].clone(), app.macro_speed);
-        }
-        if let Some(i) = edited {
-            let _ = crate::macros::save_all(&app.macros);
-            crate::hook::set_macros(app.macros.clone());
-        }
-        if let Some(i) = to_delete {
-            app.macros.remove(i);
-            if app.macro_sel == Some(i) {
-                app.macro_sel = None;
-            }
-            let _ = crate::macros::save_all(&app.macros);
-            crate::hook::set_macros(app.macros.clone());
+        if add_mouse {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i].events.push(M::Ev::mouse(M::BTN_LEFT, true));
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i].events.push(M::Ev::mouse(M::BTN_LEFT, false));
+            app.save_macros();
         }
     }
-
-    ui.add_space(8.0);
-    theme::card(ui, CardStyle::new(), |ui| {
-        ui.label(
-            egui::RichText::new("说明")
-                .font(app.ty.h2.clone())
-                .color(TEXT),
-        );
-        ui.add_space(6.0);
-        for line in [
-            "数据模型逆向自 Razer Synapse：延迟是独立事件、键盘用 scan code + flag、移动追踪是字符串枚举",
-            "绑定：到「按键」页把侧键改成「宏 · 名字」，并打开「启用软件按键映射」",
-            "这台鼠标没有硬件宏（0x08 无应答、能力位图不支持），所以宏跑在 PC 侧，和雷云一致",
-            "「序列宏 / 分类宏」需要多分支结构，当前版本只实现了标准宏",
-        ] {
-            ui.label(
-                egui::RichText::new(format!("· {}", line))
-                    .font(app.ty.small.clone())
-                    .color(MUTED),
-            );
-            ui.add_space(2.0);
+    if add_key {
+        crate::hook::set_capture(true);
+        app.macro_add_key = true;
+    }
+    if undo {
+        if let Some(i) = sel {
+            if let Some(prev) = app.macro_undo.pop() {
+                let cur = app.macros[i].events.clone();
+                app.macro_redo.push(cur);
+                app.macros[i].events = prev;
+                app.save_macros();
+            }
         }
-    });
+    }
+    if redo {
+        if let Some(i) = sel {
+            if let Some(next) = app.macro_redo.pop() {
+                let cur = app.macros[i].events.clone();
+                app.macro_undo.push(cur);
+                app.macros[i].events = next;
+                app.save_macros();
+            }
+        }
+    }
+    if save {
+        let ks: Vec<String> = app.macros.iter().map(|m| m.name.clone()).collect();
+        let _ = M::save_all(&app.macros);
+        crate::hook::set_macros(app.macros.clone());
+        app.toast(format!("已保存 {} 个宏", ks.len()), true, ui.input(|i| i.time));
+    }
 }
 
 // ---------------- 灯效 ----------------

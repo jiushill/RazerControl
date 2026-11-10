@@ -223,21 +223,37 @@ struct Rec {
 static REC: Mutex<Option<Rec>> = Mutex::new(None);
 static PLAYING: Mutex<bool> = Mutex::new(false);
 
+/// 取录制锁：即使之前有线程 panic 污染了锁也照常使用，
+/// 否则录制会静默失效（界面显示"录制中"但一步都记不到）。
+fn rec_lock() -> std::sync::MutexGuard<'static, Option<Rec>> {
+    REC.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn playing_lock() -> std::sync::MutexGuard<'static, bool> {
+    PLAYING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn is_recording() -> bool {
-    REC.lock().map(|g| g.is_some()).unwrap_or(false)
+    rec_lock().is_some()
 }
 pub fn is_playing() -> bool {
-    PLAYING.lock().map(|g| *g).unwrap_or(false)
+    *playing_lock()
 }
+/// 录制中的事件快照（UI 实时显示用）
+pub fn recording_snapshot() -> Vec<Ev> {
+    rec_lock()
+        .as_ref()
+        .map(|r| r.events.clone())
+        .unwrap_or_default()
+}
+
 pub fn event_count() -> usize {
-    REC.lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|r| r.events.len()))
-        .unwrap_or(0)
+    rec_lock().as_ref().map(|r| r.events.len()).unwrap_or(0)
 }
 
 pub fn start_recording(track_moves: bool) {
-    if let Ok(mut g) = REC.lock() {
+    {
+        let mut g = rec_lock();
         *g = Some(Rec {
             events: Vec::new(),
             last: Instant::now(),
@@ -249,15 +265,63 @@ pub fn start_recording(track_moves: bool) {
 }
 
 pub fn stop_recording() -> Option<(Vec<Ev>, (i32, i32))> {
-    REC.lock()
-        .ok()
-        .and_then(|mut g| g.take())
-        .map(|r| (r.events, r.origin))
+    rec_lock().take().map(|mut r| {
+        strip_stop_clicks(&mut r.events);
+        (r.events, r.origin)
+    })
+}
+
+/// 点「停止」这个动作本身是靠左键完成的，会被钩子录进去。
+/// 雷云的做法是把它剔掉 —— 我们也剔掉尾部的左键按下/抬起。
+fn strip_stop_clicks(events: &mut Vec<Ev>) {
+    for _ in 0..2 {
+        // 找到尾部最后一个非延迟事件
+        let mut i = events.len();
+        while i > 0 && events[i - 1].kind == T_DELAY {
+            i -= 1;
+        }
+        if i == 0 {
+            return;
+        }
+        let last = i - 1;
+        let is_left_up = events[last].kind == T_MOUSE
+            && events[last].a == BTN_LEFT as i32
+            && events[last].b as u8 == FLAG_UP;
+        if !is_left_up {
+            return;
+        }
+        // 往前找配对的按下
+        let mut j = last;
+        let mut down_at = None;
+        while j > 0 {
+            j -= 1;
+            if events[j].kind == T_DELAY {
+                continue;
+            }
+            if events[j].kind == T_MOUSE
+                && events[j].a == BTN_LEFT as i32
+                && events[j].b as u8 == FLAG_DOWN
+            {
+                down_at = Some(j);
+            }
+            break;
+        }
+        match down_at {
+            Some(k) => {
+                events.truncate(k);
+                while events.last().map(|e| e.kind == T_DELAY).unwrap_or(false) {
+                    events.pop();
+                }
+            }
+            None => return,
+        }
+    }
 }
 
 /// 追加一条事件；自动在它前面插入「距上一条的延迟」事件（与雷云同构）
 fn append(ev: Ev) {
-    if let Ok(mut g) = REC.lock() {
+    {
+        let mut g = rec_lock();
         if let Some(r) = g.as_mut() {
             let now = Instant::now();
             let dt = now.duration_since(r.last).as_millis().min(60_000) as u32;
@@ -266,6 +330,28 @@ fn append(ev: Ev) {
             r.events.push(ev);
         }
     }
+}
+
+/// 该步骤是否被用户勾掉（不参与回放）
+pub fn ev_disabled(e: &Ev) -> bool {
+    (e.c & 1) != 0
+}
+
+pub fn ev_set_disabled(e: &mut Ev, off: bool) {
+    if off {
+        e.c |= 1;
+    } else {
+        e.c &= !1;
+    }
+}
+
+/// 合计时长（毫秒），只算启用的延迟步骤
+pub fn total_ms(events: &[Ev]) -> u32 {
+    events
+        .iter()
+        .filter(|e| e.kind == T_DELAY && !ev_disabled(e))
+        .map(|e| e.a.max(0) as u32)
+        .sum()
 }
 
 pub fn push_key(scancode: u16, down: bool) {
@@ -451,6 +537,9 @@ pub fn play(m: &Macro, speed: f32) {
         }
 
         for e in evs {
+            if ev_disabled(&e) {
+                continue;
+            }
             unsafe {
                 match e.kind {
                     T_DELAY => {
@@ -552,6 +641,19 @@ pub fn key_name(vk: u8) -> String {
 }
 
 /// scancode 名（Set 1，去掉 0xE000 扩展位）
+/// VK -> scan code（添加「键盘功能」步骤用）
+pub fn vk_to_scancode(vk: u8) -> u16 {
+    extern "system" {
+        fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
+    }
+    let sc = unsafe { MapVirtualKeyW(vk as u32, 0) } as u16;
+    if sc == 0 {
+        vk as u16
+    } else {
+        sc
+    }
+}
+
 pub fn sc_name(sc: u16) -> String {
     let ext = sc & SC_EXT != 0;
     let c = (sc & 0xFF) as u8;

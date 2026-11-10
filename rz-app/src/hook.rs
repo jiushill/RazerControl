@@ -157,6 +157,23 @@ struct HookState {
 static STATE: Mutex<Option<HookState>> = Mutex::new(None);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+
+/// 默认忽略注入事件（避免回放/自动化输入被录进去）。
+/// 设环境变量 RC_ALLOW_INJECTED=1 可放行，便于自动化测试。
+fn allow_injected() -> bool {
+    use std::sync::OnceLock;
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("RC_ALLOW_INJECTED")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
+fn injected_blocked(flags: u32, mask: u32) -> bool {
+    flags & mask != 0 && !allow_injected()
+}
+
 pub fn is_installed() -> bool {
     INSTALLED.load(Ordering::Relaxed)
 }
@@ -339,7 +356,7 @@ fn perform_with(act: Action, tx: Option<Sender<Req>>, macros: &[crate::macros::M
 unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
     if code >= 0 && crate::macros::is_recording() {
         let info = &*(l as *const KbdHookStruct);
-        if info.flags & LLKHF_INJECTED == 0 {
+        if !injected_blocked(info.flags, LLKHF_INJECTED) {
             use crate::macros as m;
             let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
             if is_down || matches!(w as u32, WM_KEYUP | WM_SYSKEYUP) {
@@ -397,7 +414,7 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
     let msg = w as u32;
 
     // ---- 宏录制（注入事件不录，否则回放会被再次录进去）----
-    if info.flags & LLMHF_INJECTED == 0 && crate::macros::is_recording() {
+    if !injected_blocked(info.flags, LLMHF_INJECTED) && crate::macros::is_recording() {
         use crate::macros as m;
         match msg {
             WM_MOUSEMOVE => m::push_move(info.pt.x, info.pt.y),

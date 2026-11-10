@@ -42,6 +42,17 @@ pub struct App {
     pub macro_track_moves: bool,
     /// 正在等待用户按快捷键
     pub macro_capture: bool,
+    /// 快捷键的目标宏（None = 录制用快捷键）
+    pub macro_capture_idx: Option<usize>,
+    /// 录制前设置的快捷键
+    pub macro_record_hotkey: u8,
+    /// 录制启动延迟（毫秒）
+    pub macro_start_delay_ms: u32,
+    /// 等待按一个键来添加「键盘功能」步骤
+    pub macro_add_key: bool,
+    /// 撤销/重做栈（按当前宏的步骤快照）
+    pub macro_undo: Vec<Vec<crate::macros::Ev>>,
+    pub macro_redo: Vec<Vec<crate::macros::Ev>>,
     pub page: usize,
     toasts: Vec<Toast>,
     pub connected: bool,
@@ -100,8 +111,14 @@ impl App {
             macro_recording: false,
             macro_speed: 1.0,
             macro_sel: None,
-            macro_track_moves: true,
+            macro_track_moves: false,
             macro_capture: false,
+            macro_capture_idx: None,
+            macro_record_hotkey: 0,
+            macro_start_delay_ms: 0,
+            macro_add_key: false,
+            macro_undo: Vec::new(),
+            macro_redo: Vec::new(),
             page: cfg.last_page.min(7),
             toasts: Vec::new(),
             connected: false,
@@ -116,6 +133,23 @@ impl App {
             brightness: 80.0,
             cfg,
         }
+    }
+
+    /// 记录一次撤销点（改写步骤前调用）
+    pub fn push_macro_undo(&mut self, i: usize) {
+        if let Some(m) = self.macros.get(i) {
+            self.macro_undo.push(m.events.clone());
+            if self.macro_undo.len() > 64 {
+                self.macro_undo.remove(0);
+            }
+            self.macro_redo.clear();
+        }
+    }
+
+    /// 宏落盘 + 同步给钩子
+    pub fn save_macros(&mut self) {
+        let _ = crate::macros::save_all(&self.macros);
+        crate::hook::set_macros(self.macros.clone());
     }
 
     pub fn toast(&mut self, msg: String, ok: bool, now: f64) {

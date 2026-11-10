@@ -245,51 +245,46 @@ Synapse 自己的日志里能直接对上（`%LOCALAPPDATA%\Razer\RazerAppEngine
 > **坑**：后台每 3 秒的局部刷新只带电量/DPI，它是从 `DeviceState::default()` 拼出来的，
 > `edition = 0` 会把读到的 `0x80` 覆盖回黑色。`merge()` 里必须显式保留 `new.edition = o.edition;`。
 
-### 4.4 宏（模型逆向自 Razer Synapse）
+### 4.4 宏（模型与编辑器都对齐 Razer Synapse）
 
-Synapse 的宏对这款鼠标是**纯软件**实现 —— 设备侧既没有宏命令类，也没有能力位图：
+宏对这款鼠标是**纯软件**实现 —— 设备侧既没有宏命令类，也没有能力位图：
 
 ```
-能力位图 0x00/0x00       → 所有尺寸都 timeout（V3 Pro 不支持这条命令）
+能力位图 0x00/0x00       → 所有尺寸都 timeout
 宏命令类 0x08            → 16 个 id 全部无应答
 有应答的类               → 只有 0x00 / 0x02 / 0x04 / 0x05 / 0x07
 ```
 
-宏定义存在 Chromium 的 IndexedDB 里
-（`%LOCALAPPDATA%\Razer\RazerAppEngine\User Data\Default\IndexedDB\https_apps.razer.com_0.indexeddb.leveldb`），
-`RZR_<设备ID>/macro/<宏ID>` 的值反序列化后是这样：
-
-```json
-{ "name": "Macro 1", "appEngine": {
-    "events": [ {"type":"delay","ms":966},
-                {"type":"keyboard","scancode":30,"flag":1},
-                {"type":"delay","ms":129},
-                {"type":"keyboard","scancode":30,"flag":2}, "..." ],
-    "mouseMoveType": "none",
-    "macroType": 0,
-    "delaySetting": 0,
-    "recordProfile": { "startDelay":0, "shortcutKey":0, "delayTime":0.2,
-                       "mmtSetting":0, "delaySetting":0,
-                       "randomizeDelay":{"min":0.2,"max":0.5}, "macroType":0 } } }
-```
-
-三个"必须照抄"的点：
+宏定义存在 Chromium 的 IndexedDB 里，schema 见下表；本项目的存储格式与它一一对应。
 
 | 项 | 雷云的做法 | 本项目的实现 |
 | --- | --- | --- |
-| 延迟 | **独立的 `delay` 事件**，与按键交替排列 | `events` 数组里 `kind=delay`，UI 里每行一个可编辑秒数 |
-| 键盘 | **scan code + flag**（1 按下 / 2 抬起） | 录制时 `MapVirtualKey` 反查 scancode，扩展键置 `0xE000` 位；回放用 `KEYEVENTF_SCANCODE` |
-| 移动追踪 | 字符串枚举 `none/absolute/relative/origin` | 同一个枚举；录制存**绝对坐标**，回放按模式换算成 `SetCursorPos` 或 `SendInput(MOVE, dx, dy)` |
+| 延迟 | **独立的 `delay` 事件**，与动作交替排列 | `events` 里 `kind=0`，UI 每行一个可编辑秒数 |
+| 键盘 | **scan code + flag**（1 按下 / 2 抬起） | 录制时 `MapVirtualKey` 反查；回放用 `KEYEVENTF_SCANCODE` |
+| 移动追踪 | 字符串枚举 `none/absolute/relative/origin` | 同一枚举，默认 `none`（不录鼠标移动） |
+| 步骤开关 | 每步可勾选是否参与回放 | `c` 字段最低位 = 禁用，回放时跳过 |
 
-参数面板与雷云一致：**启动延迟 / 快捷键 / 宏类型（标准·序列·分类）/ 延迟设置（录制·固定·随机·无）/ 移动追踪（无·屏幕·前台·起始点）**。
+**编辑器布局与雷云一致**：顶部工具条（合计时长 / 延迟模式下拉 / 撤销 / 重做 / 保存），
+左侧「添加」（延迟、键盘功能、鼠标功能），右侧步骤列表（勾选框 + 秒数 + 徽标 + 名称）。
+
+四个交互细节按雷云的行为实现：
+
+1. **录制实时显示** —— 录制过程中右侧列表就随着你的操作增长，`已记录 N 步 · 合计 x.xx s` 实时累加，不用等录完。
+2. **快捷键在录制前设** —— 「快捷键」按钮在录制条上，先设好再录，录完自动绑定；录完再改也支持。
+3. **停止按钮的点击不写进宏** —— 你点「停止并保存」本身是一次左键点击，会被全局钩子录进去。
+   雷云会把它删掉，本项目用 `strip_stop_clicks()` 剔除尾部的最多两组左键按下/抬起。
+4. **回放不会被二次录制** —— 钩子忽略 `LLKHF_INJECTED` / `LLMHF_INJECTED` 事件。
+   调试自动化时可用环境变量 `RC_ALLOW_INJECTED=1` 放行。
+
 序列宏与分类宏需要多分支结构，当前只实现标准宏（UI 里置灰并标注）。
 
-存储是纯文本，格式与上面的 events 一一对应：
+存储是纯文本，与上面的 events 一一对应：
 
 ```text
-[Macro 1|start=0|hot=0|delayTime=0.2|randMin=0.2|randMax=0.5|delaySetting=recorded|mmt=relative|macroType=0|ox=0|oy=0]
-0,0,0,0        # kind=0 延迟, a=毫秒
+[示例|start=0|hot=0|delayTime=0.2|...|delaySetting=recorded|mmt=none|macroType=0|ox=0|oy=0]
+0,500,0,0      # kind=0 延迟, a=毫秒
 1,30,1,0       # kind=1 键盘, a=scancode, b=flag
+2,0,1,0        # kind=2 鼠标, a=按键(0左/1右/2中), b=flag
 ```
 
 ![宏](docs/08-macros.png)
