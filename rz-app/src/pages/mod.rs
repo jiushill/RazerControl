@@ -1119,6 +1119,48 @@ fn btn_name(i: usize) -> &'static str {
     }
 }
 
+
+/// egui 的按键 -> Windows VK（窗口有焦点时的兜底捕获通道）
+fn egui_key_vk(k: egui::Key) -> Option<u8> {
+    use egui::Key as K;
+    Some(match k {
+        K::A => 0x41, K::B => 0x42, K::C => 0x43, K::D => 0x44, K::E => 0x45,
+        K::F => 0x46, K::G => 0x47, K::H => 0x48, K::I => 0x49, K::J => 0x4A,
+        K::K => 0x4B, K::L => 0x4C, K::M => 0x4D, K::N => 0x4E, K::O => 0x4F,
+        K::P => 0x50, K::Q => 0x51, K::R => 0x52, K::S => 0x53, K::T => 0x54,
+        K::U => 0x55, K::V => 0x56, K::W => 0x57, K::X => 0x58, K::Y => 0x59,
+        K::Z => 0x5A,
+        K::Num0 => 0x30, K::Num1 => 0x31, K::Num2 => 0x32, K::Num3 => 0x33,
+        K::Num4 => 0x34, K::Num5 => 0x35, K::Num6 => 0x36, K::Num7 => 0x37,
+        K::Num8 => 0x38, K::Num9 => 0x39,
+        K::F1 => 0x70, K::F2 => 0x71, K::F3 => 0x72, K::F4 => 0x73,
+        K::F5 => 0x74, K::F6 => 0x75, K::F7 => 0x76, K::F8 => 0x77,
+        K::F9 => 0x78, K::F10 => 0x79, K::F11 => 0x7A, K::F12 => 0x7B,
+        K::Space => 0x20, K::Enter => 0x0D, K::Tab => 0x09,
+        K::Escape => 0x1B, K::Backspace => 0x08, K::Delete => 0x2E,
+        K::Insert => 0x2D, K::Home => 0x24, K::End => 0x23,
+        K::PageUp => 0x21, K::PageDown => 0x22,
+        K::ArrowLeft => 0x25, K::ArrowUp => 0x26,
+        K::ArrowRight => 0x27, K::ArrowDown => 0x28,
+        K::Minus => 0xBD, K::Plus | K::Equals => 0xBB,
+        K::Comma => 0xBC, K::Period => 0xBE, K::Slash => 0xBF,
+        K::Semicolon => 0xBA, K::Quote => 0xDE,
+        K::OpenBracket => 0xDB, K::CloseBracket => 0xDD,
+        K::Backslash => 0xDC, K::Backtick => 0xC0,
+        _ => return None,
+    })
+}
+
+/// 从 egui 本帧的输入里取一个刚按下的键（兜底通道）
+fn egui_pressed_vk(ui: &Ui) -> Option<u8> {
+    ui.input(|i| {
+        i.events.iter().find_map(|e| match e {
+            egui::Event::Key { key, pressed: true, .. } => egui_key_vk(*key),
+            _ => None,
+        })
+    })
+}
+
 // ---------------- 宏 ----------------
 pub fn macros(app: &mut App, ui: &mut Ui) {
     use crate::macros as M;
@@ -1128,10 +1170,18 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
 
     // 快捷键捕获（录制前设置 / 编辑器里改绑）
     if app.macro_capture {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(120));
-        if let Some(vk) = crate::hook::take_captured() {
+        // 捕获期间连续重绘：request_repaint_after 在窗口失焦时会被系统拖后，
+        // 导致"按了键要等一会儿才认"。
+        ui.ctx().request_repaint();
+        if let Some(vk) = crate::hook::take_captured().or_else(|| egui_pressed_vk(ui)) {
             app.macro_capture = false;
+            if vk == 0x1B {
+                // Esc 取消捕获，不占用快捷键
+                let now = ui.input(|i| i.time);
+                app.toast("已取消".into(), false, now);
+                return;
+            }
+            crate::hook::debug_log(&format!("ui took hotkey vk=0x{vk:02X}"));
             match app.macro_capture_idx {
                 Some(i) => {
                     if let Some(m) = app.macros.get_mut(i) {
@@ -1148,12 +1198,15 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     }
     // 「键盘功能」：捕获一个键作为新步骤
     if app.macro_add_key {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(120));
-        if let Some(vk) = crate::hook::take_captured() {
+        ui.ctx().request_repaint();
+        if let Some(vk) = crate::hook::take_captured().or_else(|| egui_pressed_vk(ui)) {
             app.macro_add_key = false;
             if let Some(i) = app.macro_sel {
                 let sc = M::vk_to_scancode(vk);
+                crate::hook::debug_log(&format!(
+                    "ui took keypress vk=0x{vk:02X} sc=0x{sc:02X} step={:?}",
+                    app.macro_target_step
+                ));
                 let step = app.macro_target_step.take();
                 let mut evs = app.macros[i].events.clone();
                 match step {
@@ -1173,7 +1226,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     }
     if app.macro_recording {
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(120));
+            .request_repaint_after(std::time::Duration::from_millis(60));
     }
 
     // ================= 录制条 =================
@@ -1252,10 +1305,18 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             }
             if app.macro_capture && app.macro_capture_idx.is_none() {
                 ui.label(
-                    egui::RichText::new("请按键…")
+                    egui::RichText::new("请按键…（Esc 取消）")
                         .font(app.ty.tiny.clone())
                         .color(WARN),
                 );
+            } else if hot != 0 {
+                if ui
+                    .small_button("✕")
+                    .on_hover_text("清除快捷键")
+                    .clicked()
+                {
+                    app.macro_record_hotkey = 0;
+                }
             }
 
             ui.add_space(22.0);

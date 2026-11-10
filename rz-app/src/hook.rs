@@ -230,6 +230,15 @@ pub fn set_macros(list: Vec<crate::macros::Macro>) {
 }
 
 /// 开始/结束「按下一个键作为快捷键」的捕获
+pub fn debug_log(msg: &str) {
+    dbg(msg);
+}
+
+fn dbg_ts() -> u128 {
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    T0.get_or_init(std::time::Instant::now).elapsed().as_millis()
+}
+
 fn dbg(msg: &str) {
     if let Some(dir) = dirs_state() {
         use std::io::Write;
@@ -238,7 +247,7 @@ fn dbg(msg: &str) {
             .append(true)
             .open(format!("{dir}\\hook.log"))
         {
-            let _ = writeln!(f, "{msg}");
+            let _ = writeln!(f, "[{:>7}ms] {msg}", dbg_ts());
         }
     }
 }
@@ -399,13 +408,14 @@ fn perform_with(act: Action, tx: Option<Sender<Req>>, macros: &[crate::macros::M
 }
 
 unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
-    if code >= 0 {
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        if n < 40 && std::env::var("RC_HOOK_TRACE").is_ok() {
-            let info = &*(l as *const KbdHookStruct);
-            dbg(&format!("kb w=0x{:04X} vk=0x{:02X}", w, info.vk_code & 0xFF));
-        }
+    if code >= 0 && std::env::var("RC_HOOK_TRACE").is_ok() {
+        let info = &*(l as *const KbdHookStruct);
+        dbg(&format!(
+            "kb w=0x{:04X} vk=0x{:02X} flags=0x{:02X}",
+            w,
+            info.vk_code & 0xFF,
+            info.flags
+        ));
     }
     if code >= 0 && crate::macros::is_recording() {
         let info = &*(l as *const KbdHookStruct);
