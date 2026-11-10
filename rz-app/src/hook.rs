@@ -157,6 +157,22 @@ struct HookState {
 static STATE: Mutex<Option<HookState>> = Mutex::new(None);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+fn dirs_state() -> Option<String> {
+    std::env::var("APPDATA")
+        .ok()
+        .map(|p| format!("{p}\\RazerControl"))
+}
+
+extern "system" {
+    fn GetLastError() -> u32;
+}
+
+/// 取钩子状态锁：忽略中毒，否则一旦有线程 panic，
+/// 快捷键捕获/映射会静默全部失效（表现为"按什么键都没反应"）。
+fn state_lock() -> std::sync::MutexGuard<'static, Option<HookState>> {
+    STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 
 /// 默认忽略注入事件（避免回放/自动化输入被录进去）。
 /// 设环境变量 RC_ALLOW_INJECTED=1 可放行，便于自动化测试。
@@ -180,7 +196,7 @@ pub fn is_installed() -> bool {
 
 /// 更新映射表（可在任意线程调用）。
 pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
-    if let Ok(mut g) = STATE.lock() {
+    { let mut g = state_lock();
         match g.as_mut() {
             Some(s) => {
                 s.enabled = enabled;
@@ -205,7 +221,7 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
 /// 同步宏列表（录制/删除后调用），供 `Action::Macro` 回放使用。
 pub fn set_macros(list: Vec<crate::macros::Macro>) {
     let keys = crate::macros::hotkey_map(&list);
-    if let Ok(mut g) = STATE.lock() {
+    { let mut g = state_lock();
         if let Some(s) = g.as_mut() {
             s.macros = list;
             s.hotkeys = keys;
@@ -214,8 +230,22 @@ pub fn set_macros(list: Vec<crate::macros::Macro>) {
 }
 
 /// 开始/结束「按下一个键作为快捷键」的捕获
+fn dbg(msg: &str) {
+    if let Some(dir) = dirs_state() {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("{dir}\\hook.log"))
+        {
+            let _ = writeln!(f, "{msg}");
+        }
+    }
+}
+
 pub fn set_capture(on: bool) {
-    if let Ok(mut g) = STATE.lock() {
+    dbg(&format!("set_capture({on})"));
+    { let mut g = state_lock();
         if let Some(s) = g.as_mut() {
             s.capture = on;
         }
@@ -242,11 +272,26 @@ pub fn install() -> bool {
     thread::spawn(|| unsafe {
         let module = GetModuleHandleW(std::ptr::null());
         let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(hook_proc), module, 0);
+        let mouse_err = if hook == 0 { GetLastError() } else { 0 };
+        let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), module, 0);
+        let kb_err = if kb == 0 { GetLastError() } else { 0 };
+        // 诊断日志：钩子装没装上、失败原因
+        if let Some(dir) = dirs_state() {
+            let _ = std::fs::write(
+                format!("{dir}\\hook.log"),
+                format!(
+                    "mouse={:x} (err {}) kb={:x} (err {}) installed={}\n",
+                    hook,
+                    mouse_err,
+                    kb,
+                    kb_err,
+                    hook != 0 && kb != 0
+                ),
+            );
+        }
         if hook == 0 {
             return;
         }
-        // 键盘钩子用于宏录制（不影响日常输入，只在录制时记录）
-        let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_proc), module, 0);
         INSTALLED.store(true, Ordering::Relaxed);
         let mut msg: Msg = std::mem::zeroed();
         while GetMessageW(&mut msg, 0, 0, 0) > 0 {}
@@ -354,6 +399,14 @@ fn perform_with(act: Action, tx: Option<Sender<Req>>, macros: &[crate::macros::M
 }
 
 unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
+    if code >= 0 {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        if n < 40 && std::env::var("RC_HOOK_TRACE").is_ok() {
+            let info = &*(l as *const KbdHookStruct);
+            dbg(&format!("kb w=0x{:04X} vk=0x{:02X}", w, info.vk_code & 0xFF));
+        }
+    }
     if code >= 0 && crate::macros::is_recording() {
         let info = &*(l as *const KbdHookStruct);
         if !injected_blocked(info.flags, LLKHF_INJECTED) {
@@ -376,15 +429,16 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
     // 快捷键：捕获模式吞掉这一键；否则匹配到就回放
     if code >= 0 {
         let info = &*(l as *const KbdHookStruct);
-        if info.flags & LLKHF_INJECTED == 0 {
+        if !injected_blocked(info.flags, LLKHF_INJECTED) {
             let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
             if is_down {
                 let vk = info.vk_code as u8;
                 let mut triggered: Option<Vec<crate::macros::Macro>> = None;
-                if let Ok(mut g) = STATE.lock() {
+                { let mut g = state_lock();
                     if let Some(st) = g.as_mut() {
                         if st.capture {
                             st.capture = false;
+                            dbg(&format!("captured vk=0x{vk:02X}"));
                             CAPTURED.store(vk as i16, Ordering::Relaxed);
                             return 1; // 吞掉，避免这个键同时触发原功能
                         }
@@ -451,10 +505,7 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
         _ => return CallNextHookEx(0, code, w, l),
     };
 
-    let mut g = match STATE.lock() {
-        Ok(g) => g,
-        Err(_) => return CallNextHookEx(0, code, w, l),
-    };
+    let mut g = state_lock();
     let st = match g.as_mut() {
         Some(s) if s.enabled => s,
         _ => return CallNextHookEx(0, code, w, l),

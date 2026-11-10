@@ -1592,10 +1592,26 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 } else {
                                     M::sc_name(evs[j].a as u16)
                                 };
-                                let txt = egui::RichText::new(name)
-                                    .font(app.ty.small.clone())
-                                    .color(if evs[j].a <= 0 { ACCENT } else { TEXT });
-                                if ui.button(txt).on_hover_text("点一下，然后按要用的键").clicked() {
+                                let waiting = app.macro_add_key && app.macro_target_step == Some(j);
+                                let label = if waiting { "请按键…" } else { "选择键" };
+                                let txt = egui::RichText::new(if waiting {
+                                    label.to_string()
+                                } else {
+                                    name
+                                })
+                                .font(app.ty.small.clone())
+                                .color(if waiting {
+                                    WARN
+                                } else if evs[j].a <= 0 {
+                                    ACCENT
+                                } else {
+                                    TEXT
+                                });
+                                if ui
+                                    .button(txt)
+                                    .on_hover_text("点一下，然后按要用的键")
+                                    .clicked()
+                                {
                                     app.macro_target_step = Some(j);
                                     app.macro_add_key = true;
                                     crate::hook::set_capture(true);
