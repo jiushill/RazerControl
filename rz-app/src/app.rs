@@ -741,7 +741,7 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         // 窗口有焦点时按键可能到不了全局钩子 —— 录制热键在这里兜底
-        if self.macro_record_hotkey != 0 {
+        if self.macro_record_hotkey != 0 && !crate::macros::is_playing() {
             let key = self.macro_record_hotkey;
             let (hit, focused_now, keys_seen) = ctx.input(|i| {
                 let mut hit = false;

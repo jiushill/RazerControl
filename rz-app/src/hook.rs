@@ -432,7 +432,7 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
             info.flags
         ));
     }
-    if code >= 0 && crate::macros::is_recording() {
+    if code >= 0 && crate::macros::is_recording() && !crate::macros::is_playing() {
         let info = &*(l as *const KbdHookStruct);
         if !injected_blocked(info.flags, LLKHF_INJECTED) {
             use crate::macros as m;
@@ -455,7 +455,12 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
     if code >= 0 {
         let info = &*(l as *const KbdHookStruct);
         let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-        if is_down && !injected_blocked(info.flags, LLKHF_INJECTED) {
+        // 注入事件（回放自己发出的按键）绝不能触发录制热键，
+        // 否则宏里含 R 键时，"回放 R" 就会被当成"用户按了录制热键"。
+        if is_down
+            && info.flags & LLKHF_INJECTED == 0
+            && !crate::macros::is_playing()
+        {
             let vk = info.vk_code as u8;
             let mut hit = false;
             let mut track = false;
@@ -523,7 +528,10 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
     let msg = w as u32;
 
     // ---- 宏录制（注入事件不录，否则回放会被再次录进去）----
-    if !injected_blocked(info.flags, LLMHF_INJECTED) && crate::macros::is_recording() {
+    if !injected_blocked(info.flags, LLMHF_INJECTED)
+        && crate::macros::is_recording()
+        && !crate::macros::is_playing()
+    {
         use crate::macros as m;
         match msg {
             WM_MOUSEMOVE => m::push_move(info.pt.x, info.pt.y),
