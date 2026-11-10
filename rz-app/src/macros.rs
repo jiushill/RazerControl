@@ -338,39 +338,49 @@ pub fn stop_recording() -> Option<(Vec<Ev>, (i32, i32))> {
     })
 }
 
-/// 录制热键自身（开始录制时的抬起、停止时的按下）不该出现在宏里。
+/// 录制热键自身（含修饰键）不该出现在宏里。
+/// 组合键 Ctrl+Alt+R 会留下：开头的 R 抬起 / Alt 抬起 / Ctrl 抬起，
+/// 结尾的 Ctrl 按下 / Alt 按下 / R 按下 —— 这些都要剔掉。
 fn strip_hotkey_edges(events: &mut Vec<Ev>) {
     let vk = RECORD_HOTKEY.load(std::sync::atomic::Ordering::Relaxed);
     if vk == 0 {
         return;
     }
-    let sc = vk_to_scancode(vk);
-    let is_hot = |e: &Ev, flag: u8| {
-        e.kind == T_KEYBOARD
-            && (e.a.max(0) as u16 & 0x1FFF) == (sc & 0x1FFF)
-            && e.b as u8 == flag
+    let hot_sc = vk_to_scancode(vk) & 0x1FFF;
+    // 修饰键的扫描码（含扩展位形式）
+    const MOD_SC: [u16; 8] = [0x1D, 0x2A, 0x36, 0x38, 0x5B, 0x5C, 0xE01D, 0xE038];
+
+    let is_hot_or_mod = |e: &Ev| {
+        if e.kind != T_KEYBOARD {
+            return false;
+        }
+        let sc = e.a.max(0) as u16 & 0x1FFF;
+        sc == hot_sc || MOD_SC.iter().any(|m| (*m & 0x1FFF) == sc)
     };
 
-    // 开头：抬起（开始录制那一下的释放）
+    // 开头：直到遇到第一个"真实动作"，把热键/修饰键的抬起都去掉
     loop {
         let mut i = 0;
         while i < events.len() && events[i].kind == T_DELAY {
             i += 1;
         }
-        if i < events.len() && is_hot(&events[i], FLAG_UP) {
+        if i < events.len()
+            && is_hot_or_mod(&events[i])
+            && events[i].b as u8 == FLAG_UP
+        {
             events.drain(0..=i);
             continue;
         }
         break;
     }
 
-    // 结尾：按下（按热键停止那一下，若被录进来）
+    // 结尾：热键/修饰键的按下（比如按 Ctrl+Alt+R 停止时，Ctrl/Alt/R 的按下）
     loop {
         let mut i = events.len();
         while i > 0 && events[i - 1].kind == T_DELAY {
             i -= 1;
         }
-        if i > 0 && is_hot(&events[i - 1], FLAG_DOWN) {
+        if i > 0 && is_hot_or_mod(&events[i - 1]) && events[i - 1].b as u8 == FLAG_DOWN {
             events.truncate(i - 1);
             while events.last().map(|e| e.kind == T_DELAY).unwrap_or(false) {
                 events.pop();
@@ -1238,15 +1248,23 @@ mod tests {
         let sc_r = vk_to_scancode(0x52);
         let sc_a = vk_to_scancode(0x41);
 
-        // 开始录制那一下的抬起 + 中间正常动作 + 停止那一下的按下
+        // 开始：R/Alt/Ctrl 的抬起；中间：正常 A 键；结尾：Ctrl/Alt/R 的按下
         let mut evs = vec![
             Ev::delay(0),
             k(sc_r, false),
+            Ev::delay(3),
+            k(0x38, false), // Alt 抬起
+            Ev::delay(3),
+            k(0x1D, false), // Ctrl 抬起
             Ev::delay(500),
             k(sc_a, true),
             Ev::delay(80),
             k(sc_a, false),
             Ev::delay(120),
+            k(0x1D, true), // Ctrl 按下
+            Ev::delay(2),
+            k(0x38, true), // Alt 按下
+            Ev::delay(2),
             k(sc_r, true),
         ];
         strip_hotkey_edges(&mut evs);
