@@ -1449,6 +1449,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     let mut add_delay = false;
     let mut add_key = false;
     let mut add_mouse = false;
+    let mut add_text = false;
     let mut undo = false;
     let mut redo = false;
     let mut save = false;
@@ -1627,6 +1628,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 M::T_KEYBOARD | M::T_KEYPRESS => ("键", ACCENT),
                                 M::T_MOUSE | M::T_ACTION => ("鼠", INFO),
                                 M::T_WHEEL => ("轮", TEXT),
+                                M::T_TEXT => ("文", ACCENT),
                                 _ => ("移", MUTED),
                             };
                             let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
@@ -1665,6 +1667,18 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                         }
                                     }
                                 });
+                            } else if evs[j].kind == M::T_TEXT && !app.macro_recording {
+                                let label = if evs[j].text.is_empty() {
+                                    "点击编辑文本".to_string()
+                                } else {
+                                    M::ev_label(&evs[j])
+                                };
+                                let txt = egui::RichText::new(label)
+                                    .font(app.ty.small.clone())
+                                    .color(if evs[j].text.is_empty() { ACCENT } else { TEXT });
+                                if ui.button(txt).on_hover_text("点开编辑这段文字").clicked() {
+                                    app.text_edit = Some((j, evs[j].text.clone()));
+                                }
                             } else if evs[j].kind == M::T_KEYPRESS && !app.macro_recording {
                                 let name = if evs[j].a <= 0 {
                                     "选择键".to_string()
@@ -1748,6 +1762,14 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             app.macros[i].events.push(M::Ev::delay(100));
             app.save_macros();
         }
+        if add_text {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i].events.push(M::Ev::text_step(""));
+            let idx = app.macros[i].events.len() - 1;
+            app.text_edit = Some((idx, String::new()));
+            app.save_macros();
+        }
         if add_mouse {
             // 和雷云一样：先插入一个未选择操作的步骤，再在行内下拉里挑动作
             app.push_macro_undo(i);
@@ -1795,6 +1817,58 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
         let _ = M::save_all(&app.macros);
         crate::hook::set_macros(app.macros.clone());
         app.toast(format!("已保存 {} 个宏", ks.len()), true, ui.input(|i| i.time));
+    }
+
+    // ---------- 文本功能编辑弹窗 ----------
+    if let Some((idx, draft0)) = app.text_edit.clone() {
+        let mut draft = draft0;
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+        egui::Window::new("文本功能")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut draft)
+                        .desired_width(320.0)
+                        .desired_rows(6)
+                        .hint_text("要打出来的文字"),
+                );
+                let n = draft.chars().count();
+                ui.label(
+                    egui::RichText::new(format!("{}/{}", n, crate::macros::TEXT_MAX))
+                        .font(app.ty.tiny.clone())
+                        .color(if n > crate::macros::TEXT_MAX { WARN } else { MUTED }),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if widgets::ghost_button(ui, &app.ty, "取消").clicked() {
+                        cancel = true;
+                    }
+                    if widgets::accent_button(ui, &app.ty, "保存").clicked() {
+                        save = true;
+                    }
+                });
+            });
+
+        if save {
+            let clipped: String = draft.chars().take(crate::macros::TEXT_MAX).collect();
+            if let Some(mi) = app.macro_sel {
+                app.push_macro_undo(mi);
+                if let Some(e) = app.macros[mi].events.get_mut(idx) {
+                    e.text = clipped;
+                }
+                app.save_macros();
+            }
+            app.text_edit = None;
+        } else if cancel || !open {
+            app.text_edit = None;
+        } else {
+            app.text_edit = Some((idx, draft));
+        }
     }
 }
 

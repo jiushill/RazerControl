@@ -35,6 +35,10 @@ pub const T_WHEEL: u8 = 4;
 pub const T_ACTION: u8 = 5;
 /// 按键步骤（雷云「键盘功能」）：a = scan code，回放时自动按下+抬起
 pub const T_KEYPRESS: u8 = 6;
+/// 文本步骤（雷云「文本功能」）：text 里是要打出来的文字
+pub const T_TEXT: u8 = 7;
+/// 雷云的文本上限
+pub const TEXT_MAX: usize = 250;
 
 /// 未选择任何动作（插入后的初始状态，对应雷云的「选择操作」）
 pub const ACT_UNSET: i32 = -1;
@@ -75,7 +79,7 @@ pub const BTN_X2: u8 = 4;
 /// 扩展键在 scancode 高位置 0xE000（回放时转成 KEYEVENTF_EXTENDEDKEY）
 pub const SC_EXT: u16 = 0xE000;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Ev {
     pub kind: u8,
     /// delay: 毫秒；keyboard: scancode；mouse: 键号；wheel: 增量
@@ -84,6 +88,8 @@ pub struct Ev {
     pub b: i32,
     /// mouse_move: x
     pub c: i32,
+    /// 仅 T_TEXT 使用：要打出来的文字
+    pub text: String,
 }
 
 impl Ev {
@@ -100,6 +106,7 @@ impl Ev {
             a: sc as i32,
             b: if down { FLAG_DOWN as i32 } else { FLAG_UP as i32 },
             c: 0,
+            text: String::new(),
         }
     }
     pub fn mouse(btn: u8, down: bool) -> Self {
@@ -108,6 +115,7 @@ impl Ev {
             a: btn as i32,
             b: if down { FLAG_DOWN as i32 } else { FLAG_UP as i32 },
             c: 0,
+            text: String::new(),
         }
     }
     /// 动作步骤（雷云「鼠标功能」）：code = ACTIONS 下标，ACT_UNSET 表示未选择
@@ -115,6 +123,14 @@ impl Ev {
         Ev {
             kind: T_ACTION,
             a: code,
+            ..Default::default()
+        }
+    }
+    /// 文本步骤（雷云「文本功能」）
+    pub fn text_step(s: &str) -> Self {
+        Ev {
+            kind: T_TEXT,
+            text: s.chars().take(TEXT_MAX).collect(),
             ..Default::default()
         }
     }
@@ -139,6 +155,7 @@ impl Ev {
             a: 0,
             b: y,
             c: x,
+            text: String::new(),
         }
     }
 }
@@ -691,6 +708,48 @@ fn key_event(sc: u16, down: bool) {
     send_input(&inp);
 }
 
+/// 把一段文字打出来：ASCII 用扫描码（游戏也认），其它字符用 Unicode 注入
+fn type_text(s: &str) {
+    extern "system" {
+        fn VkKeyScanW(ch: u16) -> i16;
+    }
+    for ch in s.chars() {
+        let mut buf = [0u16; 2];
+        let enc = ch.encode_utf16(&mut buf);
+        if enc.len() == 1 && (ch as u32) < 128 {
+            let r = unsafe { VkKeyScanW(ch as u16) };
+            if r != -1 {
+                let vk = (r as u16 & 0xFF) as u8;
+                let shift = (r as u16 & 0x0100) != 0;
+                let sc = vk_to_scancode(vk);
+                if shift {
+                    key_event(vk_to_scancode(0x10), true);
+                }
+                key_event(sc, true);
+                key_event(sc, false);
+                if shift {
+                    key_event(vk_to_scancode(0x10), false);
+                }
+                continue;
+            }
+        }
+        // 非 ASCII / 特殊字符：Unicode 注入
+        for u in enc {
+            let mut inp: Input = unsafe { std::mem::zeroed() };
+            inp.kind = 1;
+            inp.u.ki.scan = *u;
+            inp.u.ki.flags = 0x0004; // KEYEVENTF_UNICODE
+            send_input(&inp);
+            let mut up: Input = unsafe { std::mem::zeroed() };
+            up.kind = 1;
+            up.u.ki.scan = *u;
+            up.u.ki.flags = 0x0004 | 0x0002;
+            send_input(&up);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+}
+
 /// 执行一个雷云动作码（见 ACTIONS）
 fn play_action(code: i32, _factor: f32) {
     match code {
@@ -772,6 +831,9 @@ pub fn play(m: &Macro, speed: f32) {
                     }
                     T_ACTION => {
                         play_action(e.a, factor);
+                    }
+                    T_TEXT => {
+                        type_text(&e.text);
                     }
                     T_KEYPRESS => {
                         let sc = e.a.max(0) as u16;
@@ -986,6 +1048,11 @@ pub fn ev_label(e: &Ev) -> String {
     if e.kind == T_KEYPRESS {
         return format!("{} 按键", sc_name(e.a.max(0) as u16));
     }
+    if e.kind == T_TEXT {
+        let preview: String = e.text.chars().take(24).collect();
+        let ell = if e.text.chars().count() > 24 { "…" } else { "" };
+        return format!("文本：{}{}", preview, ell);
+    }
     match e.kind {
         T_DELAY => format!("延迟 {:.3}s", e.a.max(0) as f32 / 1000.0),
         T_KEYBOARD => format!(
@@ -1083,8 +1150,8 @@ pub fn load_all() -> Vec<Macro> {
             out.push(parse_header(line));
             continue;
         }
-        let p: Vec<&str> = line.split(',').collect();
-        if p.len() != 4 || out.is_empty() {
+        let p: Vec<&str> = line.splitn(5, ',').collect();
+        if p.len() < 4 || out.is_empty() {
             continue;
         }
         let kind = p[0].parse::<u8>().ok();
@@ -1092,9 +1159,42 @@ pub fn load_all() -> Vec<Macro> {
         let b = p[2].parse::<i32>().ok();
         let c = p[3].parse::<i32>().ok();
         if let (Some(kind), Some(a), Some(b), Some(c)) = (kind, a, b, c) {
+            let ev_text = if p.len() >= 5 { unescape_text(p[4]) } else { String::new() };
             if let Some(m) = out.last_mut() {
-                m.events.push(Ev { kind, a, b, c });
+                m.events.push(Ev {
+                    kind,
+                    a,
+                    b,
+                    c,
+                    text: ev_text,
+                });
             }
+        }
+    }
+    out
+}
+
+fn escape_text(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "")
+        .replace('|', "\\p")
+}
+
+fn unescape_text(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('n') => out.push('\n'),
+                Some('p') => out.push('|'),
+                Some('\\') => out.push('\\'),
+                Some(o) => out.push(o),
+                None => {}
+            }
+        } else {
+            out.push(c);
         }
     }
     out
@@ -1274,6 +1374,25 @@ mod tests {
         assert!(evs.iter().all(|e| e.kind != T_KEYBOARD
             || ((e.a.max(0) as u16) & 0x1FFF) == (sc_a & 0x1FFF)));
         set_record_hotkey(0);
+    }
+
+    #[test]
+    fn text_step_roundtrip() {
+        let raw = "Raid|EnMei\n第二行\\结尾";
+        let esc = escape_text(raw);
+        assert_eq!(unescape_text(&esc), raw);
+
+        let ev = Ev::text_step("你好abc|d");
+        assert_eq!(ev.kind, T_TEXT);
+        assert_eq!(ev.text, "你好abc|d");
+        assert!(ev_label(&ev).starts_with("文本："));
+    }
+
+    #[test]
+    fn text_is_capped() {
+        let long: String = "a".repeat(400);
+        let ev = Ev::text_step(&long);
+        assert_eq!(ev.text.chars().count(), TEXT_MAX);
     }
 
     #[test]
