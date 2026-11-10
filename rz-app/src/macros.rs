@@ -266,6 +266,12 @@ struct Rec {
 }
 
 static REC: Mutex<Option<Rec>> = Mutex::new(None);
+/// 当前的「开始/停止录制」热键（VK），用于把热键自身的按下/抬起从录制结果里剔除
+static RECORD_HOTKEY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_record_hotkey(vk: u8) {
+    RECORD_HOTKEY.store(vk, std::sync::atomic::Ordering::Relaxed);
+}
 static PLAYING: Mutex<bool> = Mutex::new(false);
 
 /// 取录制锁：即使之前有线程 panic 污染了锁也照常使用，
@@ -326,9 +332,53 @@ pub fn start_recording(track_moves: bool) {
 pub fn stop_recording() -> Option<(Vec<Ev>, (i32, i32))> {
     rec_lock().take().map(|mut r| {
         strip_stop_clicks(&mut r.events);
+        strip_hotkey_edges(&mut r.events);
         crate::hook::debug_log(&format!("stop_recording events={}", r.events.len()));
         (r.events, r.origin)
     })
+}
+
+/// 录制热键自身（开始录制时的抬起、停止时的按下）不该出现在宏里。
+fn strip_hotkey_edges(events: &mut Vec<Ev>) {
+    let vk = RECORD_HOTKEY.load(std::sync::atomic::Ordering::Relaxed);
+    if vk == 0 {
+        return;
+    }
+    let sc = vk_to_scancode(vk);
+    let is_hot = |e: &Ev, flag: u8| {
+        e.kind == T_KEYBOARD
+            && (e.a.max(0) as u16 & 0x1FFF) == (sc & 0x1FFF)
+            && e.b as u8 == flag
+    };
+
+    // 开头：抬起（开始录制那一下的释放）
+    loop {
+        let mut i = 0;
+        while i < events.len() && events[i].kind == T_DELAY {
+            i += 1;
+        }
+        if i < events.len() && is_hot(&events[i], FLAG_UP) {
+            events.drain(0..=i);
+            continue;
+        }
+        break;
+    }
+
+    // 结尾：按下（按热键停止那一下，若被录进来）
+    loop {
+        let mut i = events.len();
+        while i > 0 && events[i - 1].kind == T_DELAY {
+            i -= 1;
+        }
+        if i > 0 && is_hot(&events[i - 1], FLAG_DOWN) {
+            events.truncate(i - 1);
+            while events.last().map(|e| e.kind == T_DELAY).unwrap_or(false) {
+                events.pop();
+            }
+            continue;
+        }
+        break;
+    }
 }
 
 /// 点「停止」这个动作本身是靠左键完成的，会被钩子录进去。
@@ -1113,4 +1163,48 @@ pub fn hotkey_map(list: &[Macro]) -> Vec<(u8, usize)> {
         .filter(|(_, m)| m.profile.shortcut != 0)
         .map(|(i, m)| (m.profile.shortcut, i))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn k(sc: u16, down: bool) -> Ev {
+        Ev::key(sc, down)
+    }
+
+    #[test]
+    fn strips_hotkey_edges() {
+        set_record_hotkey(0x52); // R
+        let sc_r = vk_to_scancode(0x52);
+        let sc_a = vk_to_scancode(0x41);
+
+        // 开始录制那一下的抬起 + 中间正常动作 + 停止那一下的按下
+        let mut evs = vec![
+            Ev::delay(0),
+            k(sc_r, false),
+            Ev::delay(500),
+            k(sc_a, true),
+            Ev::delay(80),
+            k(sc_a, false),
+            Ev::delay(120),
+            k(sc_r, true),
+        ];
+        strip_hotkey_edges(&mut evs);
+
+        // 热键的按下/抬起都该消失，A 键动作保留
+        assert_eq!(evs.iter().filter(|e| e.kind == T_KEYBOARD).count(), 2);
+        assert!(evs.iter().all(|e| e.kind != T_KEYBOARD
+            || ((e.a.max(0) as u16) & 0x1FFF) == (sc_a & 0x1FFF)));
+        set_record_hotkey(0);
+    }
+
+    #[test]
+    fn keeps_everything_without_hotkey() {
+        set_record_hotkey(0);
+        let mut evs = vec![Ev::delay(10), k(30, true), Ev::delay(50), k(30, false)];
+        let before = evs.len();
+        strip_hotkey_edges(&mut evs);
+        assert_eq!(evs.len(), before);
+    }
 }

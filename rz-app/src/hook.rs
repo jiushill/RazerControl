@@ -260,6 +260,7 @@ fn dbg(msg: &str) {
 
 /// 设置「开始/停止录制」热键
 pub fn set_record_key(vk: u8, track_moves: bool) {
+    crate::macros::set_record_hotkey(vk);
     let mut g = state_lock();
     if let Some(s) = g.as_mut() {
         s.record_key = vk;
@@ -432,25 +433,6 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
             info.flags
         ));
     }
-    if code >= 0 && crate::macros::is_recording() && !crate::macros::is_playing() {
-        let info = &*(l as *const KbdHookStruct);
-        if !injected_blocked(info.flags, LLKHF_INJECTED) {
-            use crate::macros as m;
-            let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-            if is_down || matches!(w as u32, WM_KEYUP | WM_SYSKEYUP) {
-                let vk = info.vk_code & 0xFF;
-                let mut sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) as u16;
-                if sc == 0 {
-                    sc = vk as u16; // 兜底
-                }
-                if info.flags & LLKHF_EXTENDED != 0 {
-                    sc |= m::SC_EXT;
-                }
-                m::push_key(sc, is_down);
-            }
-        }
-    }
-
     // 录制热键：按一下开始录，再按一下停止并交回 UI 保存
     if code >= 0 {
         let info = &*(l as *const KbdHookStruct);
@@ -482,6 +464,25 @@ unsafe extern "system" fn kb_proc(code: i32, w: usize, l: isize) -> isize {
                     crate::macros::start_recording(track);
                 }
                 return 1; // 吞掉，别让这个键同时打到游戏里
+            }
+        }
+    }
+
+    if code >= 0 && crate::macros::is_recording() && !crate::macros::is_playing() {
+        let info = &*(l as *const KbdHookStruct);
+        if !injected_blocked(info.flags, LLKHF_INJECTED) {
+            use crate::macros as m;
+            let is_down = matches!(w as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+            if is_down || matches!(w as u32, WM_KEYUP | WM_SYSKEYUP) {
+                let vk = info.vk_code & 0xFF;
+                let mut sc = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) as u16;
+                if sc == 0 {
+                    sc = vk as u16; // 兜底
+                }
+                if info.flags & LLKHF_EXTENDED != 0 {
+                    sc |= m::SC_EXT;
+                }
+                m::push_key(sc, is_down);
             }
         }
     }
