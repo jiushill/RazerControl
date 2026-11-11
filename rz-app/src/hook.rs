@@ -230,6 +230,8 @@ pub fn configure(enabled: bool, actions: [Action; 5], tx: Sender<Req>) {
 /// 同步宏列表（录制/删除后调用），供 `Action::Macro` 回放使用。
 pub fn set_macros(list: Vec<crate::macros::Macro>) {
     let keys = crate::macros::hotkey_map(&list);
+    // 同步给宏引擎：宏套宏按名字查找
+    crate::macros::set_library(&list);
     { let mut g = state_lock();
         if let Some(s) = g.as_mut() {
             s.macros = list;

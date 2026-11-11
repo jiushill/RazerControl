@@ -1452,6 +1452,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     let mut add_text = false;
     let mut add_launch = false;
     let mut add_run = false;
+    let mut add_macro_ref = false;
     let mut undo = false;
     let mut redo = false;
     let mut save = false;
@@ -1551,12 +1552,14 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     if ui.button("运行命令").clicked() {
                         add_run = true;
                     }
+                    if ui.button("宏").clicked() {
+                        add_macro_ref = true;
+                    }
                     ui.add_enabled_ui(false, |ui| {
-                        let _ = ui.button("宏");
                         let _ = ui.button("循环");
                     })
                     .response
-                    .on_hover_text("这些类型暂未实现");
+                    .on_hover_text("循环暂未实现");
                 });
                 ui.add_space(10.0);
                 let _ = ui.separator();
@@ -1639,6 +1642,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 M::T_TEXT => ("文", ACCENT),
                                 M::T_LAUNCH => ("启", ACCENT),
                                 M::T_RUN => ("令", INFO),
+                                M::T_MACRO => ("M", ACCENT),
                                 _ => ("移", MUTED),
                             };
                             let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
@@ -1675,6 +1679,52 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                             changed = true;
                                             ui.close_menu();
                                         }
+                                    }
+                                });
+                            } else if evs[j].kind == M::T_MACRO && !app.macro_recording {
+                                // 雷云：宏 + 选择宏下拉
+                                ui.label(
+                                    egui::RichText::new("宏：")
+                                        .font(app.ty.small.clone())
+                                        .color(MUTED),
+                                );
+                                let cur = evs[j].text.clone();
+                                let label = if cur.is_empty() {
+                                    "选择宏 ▾".to_string()
+                                } else {
+                                    format!("{} ▾", cur)
+                                };
+                                let txt = egui::RichText::new(label)
+                                    .font(app.ty.small.clone())
+                                    .color(if cur.is_empty() { ACCENT } else { TEXT });
+                                ui.menu_button(txt, |ui| {
+                                    let names: Vec<String> = app
+                                        .macros
+                                        .iter()
+                                        .map(|m| m.name.clone())
+                                        .collect();
+                                    let self_name = app
+                                        .macro_sel
+                                        .and_then(|si| app.macros.get(si))
+                                        .map(|m| m.name.clone())
+                                        .unwrap_or_default();
+                                    let mut any = false;
+                                    for n in names {
+                                        if n == self_name {
+                                            continue; // 不能引用自己
+                                        }
+                                        any = true;
+                                        if ui.button(&n).clicked() {
+                                            evs[j].text = n;
+                                            changed = true;
+                                            ui.close_menu();
+                                        }
+                                    }
+                                    if !any {
+                                        ui.label(
+                                            egui::RichText::new("没有其它宏可引用")
+                                                .color(MUTED),
+                                        );
                                     }
                                 });
                             } else if evs[j].kind == M::T_RUN && !app.macro_recording {
@@ -1824,6 +1874,12 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             app.push_macro_undo(i);
             app.macros[i].events.push(M::Ev::delay(50));
             app.macros[i].events.push(M::Ev::run(""));
+            app.save_macros();
+        }
+        if add_macro_ref {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i].events.push(M::Ev::macro_ref(""));
             app.save_macros();
         }
         if add_text {

@@ -43,6 +43,8 @@ pub const LAUNCH_PROGRAM: i32 = 0;
 pub const LAUNCH_URL: i32 = 1;
 /// 运行命令步骤（雷云「运行命令」）：text = 命令行
 pub const T_RUN: u8 = 9;
+/// 宏步骤（雷云「宏」= 宏套宏）：text = 被引用宏的名字
+pub const T_MACRO: u8 = 10;
 /// 雷云的文本上限
 pub const TEXT_MAX: usize = 250;
 
@@ -129,6 +131,14 @@ impl Ev {
         Ev {
             kind: T_ACTION,
             a: code,
+            ..Default::default()
+        }
+    }
+    /// 宏步骤（雷云「宏」= 宏套宏）
+    pub fn macro_ref(name: &str) -> Self {
+        Ev {
+            kind: T_MACRO,
+            text: name.to_string(),
             ..Default::default()
         }
     }
@@ -886,6 +896,27 @@ fn play_action(code: i32, _factor: f32) {
 }
 
 pub fn play(m: &Macro, speed: f32) {
+    play_inner(m, speed, 0);
+}
+
+/// 宏库里按名字找（供「宏」步骤引用其它宏）
+pub fn find_macro(name: &str) -> Option<Macro> {
+    LIB.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|m| m.name == name)
+        .cloned()
+}
+
+/// 同步宏库（App 保存时调用），供宏套宏查找
+pub fn set_library(list: &[Macro]) {
+    let mut g = LIB.lock().unwrap_or_else(|e| e.into_inner());
+    *g = list.to_vec();
+}
+
+static LIB: Mutex<Vec<Macro>> = Mutex::new(Vec::new());
+
+fn play_inner(m: &Macro, speed: f32, depth: u32) {
     crate::hook::debug_log(&format!(
         "play start name={} events={}",
         m.name,
@@ -894,7 +925,9 @@ pub fn play(m: &Macro, speed: f32) {
     if m.events.is_empty() {
         return;
     }
-    if let Ok(mut p) = PLAYING.lock() {
+    // 顶层回放才抢占 PLAYING；嵌套（宏套宏）直接进入，否则会被自己的门闸挡住
+    if depth == 0 {
+        let mut p = playing_lock();
         if *p {
             return;
         }
@@ -948,6 +981,14 @@ pub fn play(m: &Macro, speed: f32) {
                     }
                     T_LAUNCH => {
                         open_target(&e.text);
+                    }
+                    T_MACRO => {
+                        // 宏套宏：按名字引用另一个宏，最多嵌套 8 层防止互相引用死循环
+                        if depth < 8 {
+                            if let Some(sub) = find_macro(&e.text) {
+                                play_inner(&sub, factor, depth + 1);
+                            }
+                        }
                     }
                     T_RUN => {
                         run_command(&e.text);
@@ -1010,7 +1051,8 @@ pub fn play(m: &Macro, speed: f32) {
                 }
             }
         }
-        if let Ok(mut p) = PLAYING.lock() {
+        if depth == 0 {
+            let mut p = playing_lock();
             *p = false;
         }
     });
@@ -1167,6 +1209,14 @@ pub fn ev_label(e: &Ev) -> String {
     }
     if e.kind == T_KEYPRESS {
         return format!("{} 按键", sc_name(e.a.max(0) as u16));
+    }
+    if e.kind == T_MACRO {
+        let n = if e.text.is_empty() {
+            "未选择".to_string()
+        } else {
+            e.text.clone()
+        };
+        return format!("宏：{}", n);
     }
     if e.kind == T_RUN {
         let mut t: String = e.text.chars().take(40).collect();
@@ -1364,7 +1414,7 @@ pub fn save_all(list: &[Macro]) -> std::io::Result<()> {
         ));
         for e in &m.events {
             // 带字符串的步骤（文本 / 启动 / 运行命令）多写一列，其余保持 4 列
-            if e.kind == T_TEXT || e.kind == T_LAUNCH || e.kind == T_RUN {
+            if e.kind == T_TEXT || e.kind == T_LAUNCH || e.kind == T_RUN || e.kind == T_MACRO {
                 s.push_str(&format!(
                     "{},{},{},{},{}\n",
                     e.kind,
@@ -1543,6 +1593,24 @@ mod tests {
         let long: String = "a".repeat(400);
         let ev = Ev::text_step(&long);
         assert_eq!(ev.text.chars().count(), TEXT_MAX);
+    }
+
+    #[test]
+    fn macro_library_lookup() {
+        let mut a = Macro::default();
+        a.name = "A".into();
+        let mut b = Macro::default();
+        b.name = "B".into();
+        set_library(&[a, b]);
+        assert!(find_macro("A").is_some());
+        assert!(find_macro("B").is_some());
+        assert!(find_macro("C").is_none());
+
+        // 宏步骤的标签与引用
+        let ev = Ev::macro_ref("A");
+        assert_eq!(ev.kind, T_MACRO);
+        assert!(ev_label(&ev).contains("A"));
+        set_library(&[]);
     }
 
     #[test]
