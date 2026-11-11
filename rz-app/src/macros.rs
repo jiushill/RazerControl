@@ -41,6 +41,8 @@ pub const T_TEXT: u8 = 7;
 pub const T_LAUNCH: u8 = 8;
 pub const LAUNCH_PROGRAM: i32 = 0;
 pub const LAUNCH_URL: i32 = 1;
+/// 运行命令步骤（雷云「运行命令」）：text = 命令行
+pub const T_RUN: u8 = 9;
 /// 雷云的文本上限
 pub const TEXT_MAX: usize = 250;
 
@@ -127,6 +129,14 @@ impl Ev {
         Ev {
             kind: T_ACTION,
             a: code,
+            ..Default::default()
+        }
+    }
+    /// 运行命令步骤（雷云「运行命令」）
+    pub fn run(cmd: &str) -> Self {
+        Ev {
+            kind: T_RUN,
+            text: cmd.to_string(),
             ..Default::default()
         }
     }
@@ -721,6 +731,22 @@ fn key_event(sc: u16, down: bool) {
     send_input(&inp);
 }
 
+/// 执行一条命令（cmd /C，无窗口，不等待返回）
+fn run_command(cmd: &str) {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return;
+    }
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("cmd")
+        .arg("/C")
+        .arg(cmd)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+    crate::hook::debug_log(&format!("run_command: {cmd}"));
+}
+
 /// 打开一个程序或网址（ShellExecuteW "open" 两者通用）
 fn open_target(target: &str) {
     if target.trim().is_empty() {
@@ -922,6 +948,9 @@ pub fn play(m: &Macro, speed: f32) {
                     }
                     T_LAUNCH => {
                         open_target(&e.text);
+                    }
+                    T_RUN => {
+                        run_command(&e.text);
                     }
                     T_TEXT => {
                         type_text(&e.text);
@@ -1139,6 +1168,13 @@ pub fn ev_label(e: &Ev) -> String {
     if e.kind == T_KEYPRESS {
         return format!("{} 按键", sc_name(e.a.max(0) as u16));
     }
+    if e.kind == T_RUN {
+        let mut t: String = e.text.chars().take(40).collect();
+        if e.text.chars().count() > 40 {
+            t.push('…');
+        }
+        return format!("运行命令：{}", t);
+    }
     if e.kind == T_LAUNCH {
         let kind = if e.a == LAUNCH_URL { "网站" } else { "程序" };
         let mut t: String = e.text.chars().take(28).collect();
@@ -1327,7 +1363,19 @@ pub fn save_all(list: &[Macro]) -> std::io::Result<()> {
             m.origin.1
         ));
         for e in &m.events {
-            s.push_str(&format!("{},{},{},{}\n", e.kind, e.a, e.b, e.c));
+            // 带字符串的步骤（文本 / 启动 / 运行命令）多写一列，其余保持 4 列
+            if e.kind == T_TEXT || e.kind == T_LAUNCH || e.kind == T_RUN {
+                s.push_str(&format!(
+                    "{},{},{},{},{}\n",
+                    e.kind,
+                    e.a,
+                    e.b,
+                    e.c,
+                    escape_text(&e.text)
+                ));
+            } else {
+                s.push_str(&format!("{},{},{},{}\n", e.kind, e.a, e.b, e.c));
+            }
         }
     }
     fs::write(path(), s)

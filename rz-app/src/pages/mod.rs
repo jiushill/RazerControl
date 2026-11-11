@@ -1451,6 +1451,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     let mut add_mouse = false;
     let mut add_text = false;
     let mut add_launch = false;
+    let mut add_run = false;
     let mut undo = false;
     let mut redo = false;
     let mut save = false;
@@ -1547,9 +1548,11 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     if ui.button("启动").clicked() {
                         add_launch = true;
                     }
+                    if ui.button("运行命令").clicked() {
+                        add_run = true;
+                    }
                     ui.add_enabled_ui(false, |ui| {
                         let _ = ui.button("宏");
-                        let _ = ui.button("运行命令");
                         let _ = ui.button("循环");
                     })
                     .response
@@ -1635,6 +1638,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 M::T_WHEEL => ("轮", TEXT),
                                 M::T_TEXT => ("文", ACCENT),
                                 M::T_LAUNCH => ("启", ACCENT),
+                                M::T_RUN => ("令", INFO),
                                 _ => ("移", MUTED),
                             };
                             let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
@@ -1673,6 +1677,26 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                         }
                                     }
                                 });
+                            } else if evs[j].kind == M::T_RUN && !app.macro_recording {
+                                // 雷云是行内直接编辑
+                                ui.label(
+                                    egui::RichText::new("运行命令：")
+                                        .font(app.ty.small.clone())
+                                        .color(MUTED),
+                                );
+                                let mut cmd = evs[j].text.clone();
+                                if ui
+                                    .add(
+                                        egui::TextEdit::singleline(&mut cmd)
+                                            .desired_width(320.0)
+                                            .font(egui::TextStyle::Monospace)
+                                            .hint_text("例如 notepad.exe 或 shutdown /s /t 30"),
+                                    )
+                                    .changed()
+                                {
+                                    evs[j].text = cmd;
+                                    changed = true;
+                                }
                             } else if evs[j].kind == M::T_LAUNCH && !app.macro_recording {
                                 let label = if evs[j].text.is_empty() {
                                     "点击设置程序或网站".to_string()
@@ -1794,6 +1818,12 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 .push(M::Ev::launch(M::LAUNCH_PROGRAM, ""));
             let idx = app.macros[i].events.len() - 1;
             app.launch_edit = Some((idx, M::LAUNCH_PROGRAM, String::new(), String::new()));
+            app.save_macros();
+        }
+        if add_run {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i].events.push(M::Ev::run(""));
             app.save_macros();
         }
         if add_text {
