@@ -1398,12 +1398,11 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     }
                 }
                 if widgets::accent_button(ui, &app.ty, "新建").clicked() {
-                    let n = app.macros.len() + 1;
                     let mut p = crate::macros::Profile::default();
                     p.shortcut = app.macro_record_hotkey;
                     p.start_delay_ms = app.macro_start_delay_ms;
                     app.macros.push(crate::macros::Macro {
-                        name: format!("宏 {}", n),
+                        name: crate::macros::unique_name(&app.macros),
                         events: Vec::new(),
                         origin: (0, 0),
                         profile: p,

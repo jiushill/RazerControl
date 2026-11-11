@@ -1526,6 +1526,18 @@ pub fn egui_key_vk(k: egui::Key) -> Option<u8> {
     })
 }
 
+/// 生成不与现有宏重名的新名字：取「宏 N」中最小的未使用 N。
+/// 之前用 len+1，删掉一个再新建就会撞名（出现两个「宏 3」）。
+pub fn unique_name(list: &[Macro]) -> String {
+    for n in 1..=9999 {
+        let cand = format!("宏 {}", n);
+        if !list.iter().any(|m| m.name == cand) {
+            return cand;
+        }
+    }
+    format!("宏 {}", list.len() + 1)
+}
+
 pub fn hotkey_map(list: &[Macro]) -> Vec<(u8, usize)> {
     list.iter()
         .enumerate()
@@ -1593,6 +1605,23 @@ mod tests {
         let long: String = "a".repeat(400);
         let ev = Ev::text_step(&long);
         assert_eq!(ev.text.chars().count(), TEXT_MAX);
+    }
+
+    #[test]
+    fn unique_names_never_collide() {
+        let mk = |n: &str| {
+            let mut m = Macro::default();
+            m.name = n.into();
+            m
+        };
+        // 空列表 -> 宏 1
+        assert_eq!(unique_name(&[]), "宏 1");
+        // 已有 1、2、3 -> 宏 4
+        assert_eq!(unique_name(&[mk("宏 1"), mk("宏 2"), mk("宏 3")]), "宏 4");
+        // 删掉 宏 1 后（剩 2、3）-> 宏 1（补空缺，不撞名）
+        assert_eq!(unique_name(&[mk("宏 2"), mk("宏 3")]), "宏 1");
+        // 中间有空洞 -> 取最小空位
+        assert_eq!(unique_name(&[mk("宏 1"), mk("宏 3")]), "宏 2");
     }
 
     #[test]

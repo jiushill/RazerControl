@@ -271,7 +271,7 @@ impl App {
         if events.is_empty() {
             return;
         }
-        let name = format!("宏 {}", self.macros.len() + 1);
+        let name = crate::macros::unique_name(&self.macros);
         let mut profile = crate::macros::Profile::default();
         profile.start_delay_ms = self.macro_start_delay_ms;
         profile.move_mode = if self.macro_track_moves {
