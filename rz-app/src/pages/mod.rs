@@ -1540,11 +1540,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     if ui.button("鼠标功能").clicked() {
                         add_mouse = true;
                     }
+                    if ui.button("文本功能").clicked() {
+                        add_text = true;
+                    }
                     ui.add_enabled_ui(false, |ui| {
                         let _ = ui.button("宏");
                         let _ = ui.button("启动");
                         let _ = ui.button("运行命令");
-                        let _ = ui.button("文本功能");
                         let _ = ui.button("循环");
                     })
                     .response
