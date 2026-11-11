@@ -1683,7 +1683,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                     .font(app.ty.small.clone())
                                     .color(if evs[j].text.is_empty() { ACCENT } else { TEXT });
                                 if ui.button(txt).on_hover_text("点开设置").clicked() {
-                                    app.launch_edit = Some((j, evs[j].a, evs[j].text.clone()));
+                                    let is_url = evs[j].a == M::LAUNCH_URL;
+                                    app.launch_edit = Some((
+                                        j,
+                                        evs[j].a,
+                                        if is_url { String::new() } else { evs[j].text.clone() },
+                                        if is_url { evs[j].text.clone() } else { String::new() },
+                                    ));
                                 }
                             } else if evs[j].kind == M::T_TEXT && !app.macro_recording {
                                 let label = if evs[j].text.is_empty() {
@@ -1787,7 +1793,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 .events
                 .push(M::Ev::launch(M::LAUNCH_PROGRAM, ""));
             let idx = app.macros[i].events.len() - 1;
-            app.launch_edit = Some((idx, M::LAUNCH_PROGRAM, String::new()));
+            app.launch_edit = Some((idx, M::LAUNCH_PROGRAM, String::new(), String::new()));
             app.save_macros();
         }
         if add_text {
@@ -1900,9 +1906,10 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     }
 
     // ---------- 启动编辑弹窗 ----------
-    if let Some((idx, kind0, target0)) = app.launch_edit.clone() {
+    if let Some((idx, kind0, prog0, url0)) = app.launch_edit.clone() {
         let mut kind = kind0;
-        let mut target = target0;
+        let mut prog = prog0;
+        let mut url = url0;
         let mut open = true;
         let mut save = false;
         let mut cancel = false;
@@ -1919,7 +1926,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     ui.add_space(18.0);
                     ui.add_enabled_ui(kind == crate::macros::LAUNCH_PROGRAM, |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut target)
+                            egui::TextEdit::singleline(&mut prog)
                                 .desired_width(300.0)
                                 .hint_text("C:\\Path\\To\\App.exe"),
                         );
@@ -1935,7 +1942,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     ui.add_space(18.0);
                     ui.add_enabled_ui(kind == crate::macros::LAUNCH_URL, |ui| {
                         ui.add(
-                            egui::TextEdit::singleline(&mut target)
+                            egui::TextEdit::singleline(&mut url)
                                 .desired_width(340.0)
                                 .hint_text("https://example.com"),
                         );
@@ -1954,17 +1961,22 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
 
         if browse {
             if let Some(p) = crate::macros::pick_file() {
-                target = p;
+                prog = p;
                 kind = crate::macros::LAUNCH_PROGRAM;
             }
         }
 
         if save {
+            let chosen = if kind == crate::macros::LAUNCH_URL {
+                url.trim().to_string()
+            } else {
+                prog.trim().to_string()
+            };
             if let Some(mi) = app.macro_sel {
                 app.push_macro_undo(mi);
                 if let Some(e) = app.macros[mi].events.get_mut(idx) {
                     e.a = kind;
-                    e.text = target.clone();
+                    e.text = chosen;
                 }
                 app.save_macros();
             }
@@ -1972,7 +1984,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
         } else if cancel || !open {
             app.launch_edit = None;
         } else {
-            app.launch_edit = Some((idx, kind, target));
+            app.launch_edit = Some((idx, kind, prog, url));
         }
     }
 }
