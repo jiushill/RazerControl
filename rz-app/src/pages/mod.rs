@@ -1450,6 +1450,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     let mut add_key = false;
     let mut add_mouse = false;
     let mut add_text = false;
+    let mut add_launch = false;
     let mut undo = false;
     let mut redo = false;
     let mut save = false;
@@ -1543,9 +1544,11 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     if ui.button("文本功能").clicked() {
                         add_text = true;
                     }
+                    if ui.button("启动").clicked() {
+                        add_launch = true;
+                    }
                     ui.add_enabled_ui(false, |ui| {
                         let _ = ui.button("宏");
-                        let _ = ui.button("启动");
                         let _ = ui.button("运行命令");
                         let _ = ui.button("循环");
                     })
@@ -1631,6 +1634,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 M::T_MOUSE | M::T_ACTION => ("鼠", INFO),
                                 M::T_WHEEL => ("轮", TEXT),
                                 M::T_TEXT => ("文", ACCENT),
+                                M::T_LAUNCH => ("启", ACCENT),
                                 _ => ("移", MUTED),
                             };
                             let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
@@ -1669,6 +1673,18 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                         }
                                     }
                                 });
+                            } else if evs[j].kind == M::T_LAUNCH && !app.macro_recording {
+                                let label = if evs[j].text.is_empty() {
+                                    "点击设置程序或网站".to_string()
+                                } else {
+                                    M::ev_label(&evs[j])
+                                };
+                                let txt = egui::RichText::new(label)
+                                    .font(app.ty.small.clone())
+                                    .color(if evs[j].text.is_empty() { ACCENT } else { TEXT });
+                                if ui.button(txt).on_hover_text("点开设置").clicked() {
+                                    app.launch_edit = Some((j, evs[j].a, evs[j].text.clone()));
+                                }
                             } else if evs[j].kind == M::T_TEXT && !app.macro_recording {
                                 let label = if evs[j].text.is_empty() {
                                     "点击编辑文本".to_string()
@@ -1762,6 +1778,16 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
         if add_delay {
             app.push_macro_undo(i);
             app.macros[i].events.push(M::Ev::delay(100));
+            app.save_macros();
+        }
+        if add_launch {
+            app.push_macro_undo(i);
+            app.macros[i].events.push(M::Ev::delay(50));
+            app.macros[i]
+                .events
+                .push(M::Ev::launch(M::LAUNCH_PROGRAM, ""));
+            let idx = app.macros[i].events.len() - 1;
+            app.launch_edit = Some((idx, M::LAUNCH_PROGRAM, String::new()));
             app.save_macros();
         }
         if add_text {
@@ -1870,6 +1896,83 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             app.text_edit = None;
         } else {
             app.text_edit = Some((idx, draft));
+        }
+    }
+
+    // ---------- 启动编辑弹窗 ----------
+    if let Some((idx, kind0, target0)) = app.launch_edit.clone() {
+        let mut kind = kind0;
+        let mut target = target0;
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+        let mut browse = false;
+        egui::Window::new("启动")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(420.0)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                ui.radio_value(&mut kind, crate::macros::LAUNCH_PROGRAM, "程序");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.add_enabled_ui(kind == crate::macros::LAUNCH_PROGRAM, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut target)
+                                .desired_width(300.0)
+                                .hint_text("C:\\Path\\To\\App.exe"),
+                        );
+                        if ui.button("浏览…").clicked() {
+                            browse = true;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                ui.radio_value(&mut kind, crate::macros::LAUNCH_URL, "网站");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    ui.add_enabled_ui(kind == crate::macros::LAUNCH_URL, |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut target)
+                                .desired_width(340.0)
+                                .hint_text("https://example.com"),
+                        );
+                    });
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if widgets::ghost_button(ui, &app.ty, "取消").clicked() {
+                        cancel = true;
+                    }
+                    if widgets::accent_button(ui, &app.ty, "保存").clicked() {
+                        save = true;
+                    }
+                });
+            });
+
+        if browse {
+            if let Some(p) = crate::macros::pick_file() {
+                target = p;
+                kind = crate::macros::LAUNCH_PROGRAM;
+            }
+        }
+
+        if save {
+            if let Some(mi) = app.macro_sel {
+                app.push_macro_undo(mi);
+                if let Some(e) = app.macros[mi].events.get_mut(idx) {
+                    e.a = kind;
+                    e.text = target.clone();
+                }
+                app.save_macros();
+            }
+            app.launch_edit = None;
+        } else if cancel || !open {
+            app.launch_edit = None;
+        } else {
+            app.launch_edit = Some((idx, kind, target));
         }
     }
 }

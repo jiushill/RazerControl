@@ -37,6 +37,10 @@ pub const T_ACTION: u8 = 5;
 pub const T_KEYPRESS: u8 = 6;
 /// 文本步骤（雷云「文本功能」）：text 里是要打出来的文字
 pub const T_TEXT: u8 = 7;
+/// 启动步骤（雷云「启动」）：a=0 程序 / a=1 网站，text = 路径或网址
+pub const T_LAUNCH: u8 = 8;
+pub const LAUNCH_PROGRAM: i32 = 0;
+pub const LAUNCH_URL: i32 = 1;
 /// 雷云的文本上限
 pub const TEXT_MAX: usize = 250;
 
@@ -123,6 +127,15 @@ impl Ev {
         Ev {
             kind: T_ACTION,
             a: code,
+            ..Default::default()
+        }
+    }
+    /// 启动步骤（雷云「启动」）
+    pub fn launch(kind: i32, target: &str) -> Self {
+        Ev {
+            kind: T_LAUNCH,
+            a: kind,
+            text: target.to_string(),
             ..Default::default()
         }
     }
@@ -708,6 +721,81 @@ fn key_event(sc: u16, down: bool) {
     send_input(&inp);
 }
 
+/// 打开一个程序或网址（ShellExecuteW "open" 两者通用）
+fn open_target(target: &str) {
+    if target.trim().is_empty() {
+        return;
+    }
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            op: *const u16,
+            file: *const u16,
+            params: *const u16,
+            dir: *const u16,
+            show: i32,
+        ) -> isize;
+    }
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    let file: Vec<u16> = target.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        ShellExecuteW(0, verb.as_ptr(), file.as_ptr(), std::ptr::null(), std::ptr::null(), 1);
+    }
+}
+
+/// 「浏览…」选择可执行文件（启动-程序）
+pub fn pick_file() -> Option<String> {
+    #[repr(C)]
+    struct OpenFileNameW {
+        l_struct_size: u32,
+        hwnd_owner: isize,
+        h_instance: isize,
+        lpstr_filter: *const u16,
+        lpstr_custom_filter: *mut u16,
+        n_max_cust_filter: u32,
+        n_filter_index: u32,
+        lpstr_file: *mut u16,
+        n_max_file: u32,
+        lpstr_file_title: *mut u16,
+        n_max_file_title: u32,
+        lpstr_initial_dir: *const u16,
+        lpstr_title: *const u16,
+        flags: u32,
+        n_file_offset: u16,
+        n_file_extension: u16,
+        lpstr_def_ext: *const u16,
+        l_cust_data: isize,
+        lpfn_hook: isize,
+        lp_template_name: *const u16,
+        pv_reserved: *mut std::ffi::c_void,
+        dw_reserved: u32,
+        flags_ex: u32,
+    }
+    #[link(name = "comdlg32")]
+    extern "system" {
+        fn GetOpenFileNameW(ofn: *mut OpenFileNameW) -> i32;
+    }
+    let filter: Vec<u16> = "程序 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0\0"
+        .encode_utf16()
+        .collect();
+    let title: Vec<u16> = "选择要启动的程序\0".encode_utf16().collect();
+    let mut buf = vec![0u16; 1024];
+    let mut ofn: OpenFileNameW = unsafe { std::mem::zeroed() };
+    ofn.l_struct_size = std::mem::size_of::<OpenFileNameW>() as u32;
+    ofn.lpstr_filter = filter.as_ptr();
+    ofn.lpstr_file = buf.as_mut_ptr();
+    ofn.n_max_file = buf.len() as u32;
+    ofn.lpstr_title = title.as_ptr();
+    ofn.flags = 0x0000_1000 | 0x0000_0800 | 0x0000_0004; // FILEMUSTEXIST | PATHMUSTEXIST | HIDEREADONLY
+    let ok = unsafe { GetOpenFileNameW(&mut ofn) };
+    if ok == 0 {
+        return None;
+    }
+    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]))
+}
+
 /// 把一段文字打出来：ASCII 用扫描码（游戏也认），其它字符用 Unicode 注入
 fn type_text(s: &str) {
     extern "system" {
@@ -831,6 +919,9 @@ pub fn play(m: &Macro, speed: f32) {
                     }
                     T_ACTION => {
                         play_action(e.a, factor);
+                    }
+                    T_LAUNCH => {
+                        open_target(&e.text);
                     }
                     T_TEXT => {
                         type_text(&e.text);
@@ -1047,6 +1138,17 @@ pub fn ev_label(e: &Ev) -> String {
     }
     if e.kind == T_KEYPRESS {
         return format!("{} 按键", sc_name(e.a.max(0) as u16));
+    }
+    if e.kind == T_LAUNCH {
+        let kind = if e.a == LAUNCH_URL { "网站" } else { "程序" };
+        let mut t: String = e.text.chars().take(28).collect();
+        if e.text.chars().count() > 28 {
+            t.push('…');
+        }
+        if t.is_empty() {
+            t = "未设置".to_string();
+        }
+        return format!("{}：{}", kind, t);
     }
     if e.kind == T_TEXT {
         let preview: String = e.text.chars().take(24).collect();

@@ -56,6 +56,8 @@ pub struct App {
     pub macro_target_step: Option<usize>,
     /// 正在编辑的文本步骤（步骤下标, 草稿）
     pub text_edit: Option<(usize, String)>,
+    /// 正在编辑的启动步骤（步骤下标, 类型, 目标）
+    pub launch_edit: Option<(usize, i32, String)>,
     /// 撤销/重做栈（按当前宏的步骤快照）
     pub macro_undo: Vec<Vec<crate::macros::Ev>>,
     pub macro_redo: Vec<Vec<crate::macros::Ev>>,
@@ -126,6 +128,7 @@ impl App {
             macro_add_key: false,
             macro_target_step: None,
             text_edit: None,
+            launch_edit: None,
             macro_undo: Vec::new(),
             macro_redo: Vec::new(),
             page: cfg.last_page.min(7),
