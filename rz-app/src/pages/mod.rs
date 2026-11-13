@@ -1341,7 +1341,20 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             }
 
             ui.add_space(22.0);
-            ui.checkbox(&mut app.macro_track_moves, "录制鼠标移动");
+            if ui
+                .checkbox(&mut app.macro_track_moves, "录制鼠标移动")
+                .changed()
+            {
+                // 热键录制用的是钩子里缓存的 flag，勾选框变化必须同步过去，
+                // 否则"设热键时没勾、后来才勾"会导致热键录制不记鼠标移动。
+                if app.macro_record_hotkey != 0 {
+                    crate::hook::set_record_key(
+                        app.macro_record_hotkey,
+                        app.macro_record_mods,
+                        app.macro_track_moves,
+                    );
+                }
+            }
         });
 
         ui.add_space(6.0);
