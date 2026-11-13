@@ -768,9 +768,10 @@ fn run_command(cmd: &str) {
     }
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    // 必须用 raw_arg：Rust 默认会对参数做引号转义（" → \"），
+    // cmd.exe 不认这种转义，带引号的命令（start "" "C:\...\chrome.exe"）就会失败。
     let _ = std::process::Command::new("cmd")
-        .arg("/C")
-        .arg(cmd)
+        .raw_arg(format!("/C {cmd}"))
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     crate::hook::debug_log(&format!("run_command: {cmd}"));
@@ -852,44 +853,28 @@ pub fn pick_file() -> Option<String> {
 }
 
 /// 把一段文字打出来：ASCII 用扫描码（游戏也认），其它字符用 Unicode 注入
+/// 把一段文字打出来。
+///
+/// 统一用 KEYEVENTF_UNICODE 注入：直接产生字符，不经过键盘布局和输入法。
+/// 之前 ASCII 走 scancode + VkKeyScan，中文输入法会把 "r" 拦成候选字（如「让」），
+/// 还会吃掉回车，导致宏在浏览器/聊天框里打不出原样文字。
 fn type_text(s: &str) {
-    extern "system" {
-        fn VkKeyScanW(ch: u16) -> i16;
-    }
     for ch in s.chars() {
         let mut buf = [0u16; 2];
-        let enc = ch.encode_utf16(&mut buf);
-        if enc.len() == 1 && (ch as u32) < 128 {
-            let r = unsafe { VkKeyScanW(ch as u16) };
-            if r != -1 {
-                let vk = (r as u16 & 0xFF) as u8;
-                let shift = (r as u16 & 0x0100) != 0;
-                let sc = vk_to_scancode(vk);
-                if shift {
-                    key_event(vk_to_scancode(0x10), true);
-                }
-                key_event(sc, true);
-                key_event(sc, false);
-                if shift {
-                    key_event(vk_to_scancode(0x10), false);
-                }
-                continue;
-            }
-        }
-        // 非 ASCII / 特殊字符：Unicode 注入
-        for u in enc {
-            let mut inp: Input = unsafe { std::mem::zeroed() };
-            inp.kind = 1;
-            inp.u.ki.scan = *u;
-            inp.u.ki.flags = 0x0004; // KEYEVENTF_UNICODE
-            send_input(&inp);
+        for u in ch.encode_utf16(&mut buf) {
+            let mut down: Input = unsafe { std::mem::zeroed() };
+            down.kind = 1;
+            down.u.ki.scan = *u;
+            down.u.ki.flags = 0x0004; // KEYEVENTF_UNICODE
+            send_input(&down);
+
             let mut up: Input = unsafe { std::mem::zeroed() };
             up.kind = 1;
             up.u.ki.scan = *u;
             up.u.ki.flags = 0x0004 | 0x0002;
             send_input(&up);
+            std::thread::sleep(std::time::Duration::from_millis(6));
         }
-        std::thread::sleep(std::time::Duration::from_millis(8));
     }
 }
 
@@ -1434,8 +1419,12 @@ fn unescape_text(s: &str) -> String {
                 Some('n') => out.push('\n'),
                 Some('p') => out.push('|'),
                 Some('\\') => out.push('\\'),
-                Some(o) => out.push(o),
-                None => {}
+                // 未知转义：原样保留反斜杠（手写单反斜杠的 Windows 路径不能被吃掉）
+                Some(o) => {
+                    out.push('\\');
+                    out.push(o);
+                }
+                None => out.push('\\'),
             }
         } else {
             out.push(c);
