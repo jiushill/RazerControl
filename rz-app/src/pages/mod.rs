@@ -132,7 +132,10 @@ pub fn dashboard(app: &mut App, ui: &mut Ui) {
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let (mode, col) = if unknown {
+                    let (mode, col) = if app.asleep {
+                        // 设备进入低功耗（只能物理移动唤醒）时，别显示成"状态未知"
+                        ("休眠中", WARN)
+                    } else if unknown {
                         ("状态未知", MUTED)
                     } else if st.wireless {
                         ("2.4G 无线", ACCENT)

@@ -406,8 +406,12 @@ fn perform_with(act: Action, tx: Option<Sender<Req>>, macros: &[crate::macros::M
         match act {
             Action::Pass | Action::Disabled => {}
             Action::Macro(k) => {
-                if let Some(m) = macros.get(k as usize) {
-                    crate::macros::play(m, 1.0);
+                // 宏不能在钩子回调里同步播放：play() 会 sleep 整段时长，
+                // 阻塞钩子线程 -> 游戏里输入会被卡住/丢弃。丢到独立线程去跑。
+                if let Some(m) = macros.get(k as usize).cloned() {
+                    std::thread::spawn(move || {
+                        crate::macros::play(&m, 1.0);
+                    });
                 }
             }
             Action::Left => send_mouse(MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),

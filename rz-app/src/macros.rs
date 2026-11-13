@@ -1067,16 +1067,22 @@ fn play_inner(m: &Macro, speed: f32, depth: u32) {
                     T_WHEEL => inject_mouse(MOUSEEVENTF_WHEEL, e.a as u32, 0, 0),
                     T_MOUSE_MOVE => match p.move_mode {
                         MoveMode::None => {}
-                        MoveMode::Absolute => {
-                            SetCursorPos(e.c, e.b);
-                            prev = Some((e.c, e.b));
-                        }
-                        MoveMode::Relative | MoveMode::Origin => {
-                            let (px, py) = prev.unwrap_or((0, 0));
+                        _ => {
+                            let (px, py) = prev.unwrap_or_else(|| {
+                                let mut cur = (0i32, 0i32);
+                                GetCursorPos(&mut cur as *mut (i32, i32));
+                                cur
+                            });
                             let dx = e.c - px;
                             let dy = e.b - py;
+                            // 1) 相对位移注入：游戏（CS2 等 raw input）只认这个，
+                            //    SetCursorPos 在游戏里是无效的
                             if dx != 0 || dy != 0 {
                                 inject_mouse(MOUSEEVENTF_MOVE, 0, dx, dy);
+                            }
+                            // 2) 绝对模式再补一次 SetCursorPos，保证桌面光标也到位
+                            if p.move_mode == MoveMode::Absolute {
+                                SetCursorPos(e.c, e.b);
                             }
                             prev = Some((e.c, e.b));
                         }

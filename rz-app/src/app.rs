@@ -521,7 +521,7 @@ impl App {
                     if self.connected { TEXT } else { DIM },
                 );
                 let sub = if self.asleep {
-                    "低功耗 · 移动鼠标刷新".to_string()
+                    "休眠中 · 移动鼠标唤醒".to_string()
                 } else if let Some(st) = self.state.as_ref() {
                     if st.caps.battery {
                         format!(

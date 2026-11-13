@@ -156,10 +156,16 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                     lost_reported = false;
                     let responsive = st.caps.dpi || st.caps.poll_rate || st.caps.battery;
                     if responsive {
+                        last_ok = Instant::now();
                         let _ = tx.send(Evt::Sleeping(false));
                         let _ = tx.send(Evt::State(Box::new(st)));
                     } else {
-                        // 接口在、但命令全部超时：无线鼠标休眠或句柄被抢占
+                        // 接口在、但一条命令都不应答：设备在低功耗态，只能靠物理移动唤醒
+                        diag("connect 但设备不应答（caps 全假）→ 判定休眠，等物理唤醒");
+                        was_asleep = true;
+                        wakes = 0;
+                        fails = 0;
+                        last_ok = Instant::now();
                         let _ = tx.send(Evt::Sleeping(true));
                     }
                     dev = Some(d);
@@ -264,7 +270,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                         let _ = tx.send(Evt::Sleeping(true));
                     }
                     // 更久才丢弃句柄，避免把抖动当成设备消失
-                    need_reconnect = fails >= 12;
+                    need_reconnect = fails >= 20;
                     if need_reconnect {
                         diag(&format!("丢弃句柄重连（连续失败 {} 次）", fails));
                     }
