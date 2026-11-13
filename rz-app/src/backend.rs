@@ -41,6 +41,30 @@ pub enum Evt {
     Sleeping(bool),
 }
 
+/// 后端诊断日志：写 %APPDATA%\RazerControl\backend.log（超过 256KB 自动截断重来）。
+/// 间歇性问题（状态变"未知"、校准突然不可用、误判休眠）靠它抓现场。
+pub fn diag(msg: &str) {
+    use std::io::Write;
+    let Some(dir) = std::env::var("APPDATA").ok() else {
+        return;
+    };
+    let path = format!("{dir}\\RazerControl\\backend.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 256 * 1024 {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let ms = T0.get_or_init(std::time::Instant::now).elapsed().as_millis();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "[{ms:>8}ms] {msg}");
+    }
+}
+
 /// UI 是否在前台/可见（决定轮询频率）。前台 150ms，可见 500ms，托盘 2s。
 static UI_FOCUSED: AtomicBool = AtomicBool::new(true);
 static UI_VISIBLE: AtomicBool = AtomicBool::new(true);
@@ -109,6 +133,25 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
             match pick_device() {
                 Some(mut d) => {
                     let st = d.snapshot();
+                    diag(&format!(
+                        "connect pid={:04X} name={} wireless={} caps={{dpi:{} poll:{} bat:{} calib:{}}}",
+                        d.info.product_id,
+                        d.product_name(),
+                        d.caps.wireless || d.spec.wireless,
+                        st.caps.dpi,
+                        st.caps.poll_rate,
+                        st.caps.battery,
+                        st.caps.calibration
+                    ));
+                    if !st.caps.dpi || !st.caps.battery {
+                        diag(&format!(
+                            "connect 快照残缺: dpi={:?} poll={} bat={:?} stages={}",
+                            Some(st.dpi),
+                            st.poll_hz,
+                            st.battery,
+                            st.profile.stages.len()
+                        ));
+                    }
                     connected.store(true, Ordering::Relaxed);
                     lost_reported = false;
                     let responsive = st.caps.dpi || st.caps.poll_rate || st.caps.battery;
@@ -145,8 +188,12 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                     lift_land = (*l, *n);
                 }
                 if let Some(d) = dev.as_mut() {
+                    let tag = format!("{:?}", r).chars().take(40).collect::<String>();
                     handle(d, r, &tx, &ctx, lift_land.0, lift_land.1);
                     let st = d.snapshot();
+                    if !st.caps.dpi || !st.caps.battery {
+                        diag(&format!("请求后快照残缺: req={tag} dpi={:?} bat={:?}", st.dpi, st.battery));
+                    }
                     let _ = tx.send(Evt::State(Box::new(st)));
                     ctx.request_repaint();
                 }
@@ -197,16 +244,30 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                 };
                 if !alive {
                     fails += 1;
+                    if fails == 1 || fails == 5 {
+                        diag(&format!(
+                            "poll 失败 #{fails}（连续），已静默 {}s",
+                            last_ok.elapsed().as_secs()
+                        ));
+                    }
                     // 设备空闲约 63s 就会进入低功耗并回 0x04 —— 这不是掉线。
                     // 只有「连续 30 秒没有任何一次成功响应」才认为真休眠，
                     // 期间界面保持最后一次读数（与 Synapse 的观感一致）。
                     if fails >= 5 && last_ok.elapsed() > Duration::from_secs(30) && !was_asleep {
+                        diag(&format!(
+                            "判定休眠（连续失败 {} 次，无成功响应 {}s）",
+                            fails,
+                            last_ok.elapsed().as_secs()
+                        ));
                         was_asleep = true;
                         wakes = 0;
                         let _ = tx.send(Evt::Sleeping(true));
                     }
                     // 更久才丢弃句柄，避免把抖动当成设备消失
                     need_reconnect = fails >= 12;
+                    if need_reconnect {
+                        diag(&format!("丢弃句柄重连（连续失败 {} 次）", fails));
+                    }
                 } else if was_asleep {
                     last_ok = Instant::now();
                     // 迟滞：连续两次成功才认为真的醒了，避免来回跳
@@ -216,6 +277,7 @@ fn worker(ctx: egui::Context, rx: Receiver<Req>, tx: Sender<Evt>, connected: Arc
                         continue;
                     }
                     // 刚从休眠中醒来：重新探测能力（例如校准接口）
+                    diag(&format!("从休眠恢复（静默 {}s）", last_ok.elapsed().as_secs()));
                     was_asleep = false;
                     fails = 0;
                     last_battery = Instant::now();

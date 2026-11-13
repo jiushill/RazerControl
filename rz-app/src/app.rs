@@ -723,9 +723,19 @@ fn merge(old: Option<&DeviceState>, mut new: DeviceState) -> DeviceState {
         if new.edition == 0 {
             new.edition = o.edition;
         }
-        if !new.caps.dpi && !new.caps.poll_rate && !new.caps.battery {
-            new.caps = o.caps;
-        }
+        // 能力位逐项合并：任何一项一旦探测成功就不该被后续的残缺快照抹掉
+        // （之前是"三项全假才回退"，于是部分探测成功时会丢掉 calibration 等能力，
+        //   表现就是校准页突然说"该型号未提供校准接口"）
+        new.caps.dpi |= o.caps.dpi;
+        new.caps.dpi_stages |= o.caps.dpi_stages;
+        new.caps.poll_rate |= o.caps.poll_rate;
+        new.caps.battery |= o.caps.battery;
+        new.caps.charging |= o.caps.charging;
+        new.caps.sleep |= o.caps.sleep;
+        new.caps.low_battery |= o.caps.low_battery;
+        new.caps.lighting |= o.caps.lighting;
+        new.caps.wireless |= o.caps.wireless;
+        new.caps.calibration |= o.caps.calibration;
         if new.profile.stages.is_empty() {
             new.profile = o.profile.clone();
             new.sleep_secs = o.sleep_secs;
