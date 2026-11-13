@@ -118,8 +118,102 @@ struct Input {
     u: InputUnion,
 }
 
+// ---------- Raw Input（录制真实鼠标增量） ----------
+const RIDEV_INPUTSINK: u32 = 0x0000_0100;
+const RIM_TYPEMOUSE: u32 = 0;
+const RID_INPUT: u32 = 0x1000_0003;
+const WM_INPUT: u32 = 0x00FF;
+
+#[repr(C)]
+struct RawInputDevice {
+    usage_page: u16,
+    usage: u16,
+    flags: u32,
+    target: isize,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawInputHeader {
+    dw_type: u32,
+    dw_size: u32,
+    h_device: isize,
+    w_param: usize,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawMouse {
+    us_flags: u16,
+    _pad: u16,
+    buttons: u32,
+    raw_buttons: u32,
+    last_x: i32,
+    last_y: i32,
+    extra: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct RawInput {
+    header: RawInputHeader,
+    mouse: RawMouse,
+}
+
+unsafe extern "system" fn raw_wndproc(
+    hwnd: isize,
+    msg: u32,
+    w: usize,
+    l: isize,
+) -> isize {
+    if msg == WM_INPUT && crate::macros::is_recording() {
+        let mut size: u32 = std::mem::size_of::<RawInput>() as u32;
+        let mut ri = RawInput::default();
+        let got = GetRawInputData(
+            l as isize,
+            RID_INPUT,
+            &mut ri as *mut RawInput as *mut std::ffi::c_void,
+            &mut size,
+            std::mem::size_of::<RawInputHeader>() as u32,
+        );
+        if got != u32::MAX && ri.header.dw_type == RIM_TYPEMOUSE {
+            // us_flags 的最低位 = MOUSE_MOVE_ABSOLUTE；为 0 时 last_x/last_y 是增量
+            if ri.mouse.us_flags & 0x0001 == 0 {
+                crate::macros::push_move_rel(ri.mouse.last_x, ri.mouse.last_y);
+            }
+        }
+    }
+    DefWindowProcW(hwnd, msg, w, l)
+}
+
 #[link(name = "user32")]
 extern "system" {
+    fn RegisterClassExW(wc: *const std::ffi::c_void) -> u16;
+    fn CreateWindowExW(
+        ex: u32,
+        class: *const u16,
+        name: *const u16,
+        style: u32,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        parent: isize,
+        menu: isize,
+        inst: isize,
+        param: *mut std::ffi::c_void,
+    ) -> isize;
+    fn DefWindowProcW(hwnd: isize, msg: u32, w: usize, l: isize) -> isize;
+    fn RegisterRawInputDevices(dev: *const RawInputDevice, n: u32, size: u32) -> i32;
+    fn GetRawInputData(
+        h: isize,
+        cmd: u32,
+        data: *mut std::ffi::c_void,
+        size: *mut u32,
+        header_size: u32,
+    ) -> u32;
+    fn TranslateMessage(msg: *const Msg) -> i32;
+    fn DispatchMessageW(msg: *const Msg) -> isize;
     fn SetWindowsHookExW(
         id: i32,
         proc: Option<unsafe extern "system" fn(i32, usize, isize) -> isize>,
@@ -250,6 +344,10 @@ fn dbg_ts() -> u128 {
     T0.get_or_init(std::time::Instant::now).elapsed().as_millis()
 }
 
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 fn dbg(msg: &str) {
     if let Some(dir) = dirs_state() {
         use std::io::Write;
@@ -323,9 +421,61 @@ pub fn install() -> bool {
         if hook == 0 {
             return;
         }
+        // 注册 Raw Input：RIDEV_INPUTSINK 让窗口在非焦点状态也能收到鼠标增量
+        let class_name = wide("RazerControlRawInput");
+        let mut wc: [u8; 80] = [0; 80];
+        // WNDCLASSEXW 布局（x64）：cbSize(u32)+style(u32)+lpfnWndProc(8)+cbClsExtra(4)+cbWndExtra(4)
+        // +hInstance(8)+hIcon(8)+hCursor(8)+hbrBackground(8)+lpszMenuName(8)+lpszClassName(8)+hIconSm(8)
+        let wc_ptr = wc.as_mut_ptr();
+        std::ptr::write_unaligned(wc_ptr as *mut u32, std::mem::size_of_val(&wc) as u32);
+        std::ptr::write_unaligned(
+            wc_ptr.add(8) as *mut isize,
+            raw_wndproc as unsafe extern "system" fn(isize, u32, usize, isize) -> isize as isize,
+        );
+        std::ptr::write_unaligned(wc_ptr.add(24) as *mut isize, module);
+        std::ptr::write_unaligned(wc_ptr.add(64) as *mut isize, class_name.as_ptr() as isize);
+        if RegisterClassExW(wc_ptr as *const std::ffi::c_void) != 0 {
+            let hwnd = CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("").as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                -3, // HWND_MESSAGE
+                0,
+                module,
+                std::ptr::null_mut(),
+            );
+            if hwnd != 0 {
+                let rid = RawInputDevice {
+                    usage_page: 0x01,
+                    usage: 0x02,
+                    flags: RIDEV_INPUTSINK,
+                    target: hwnd,
+                };
+                let ok = RegisterRawInputDevices(
+                    &rid,
+                    1,
+                    std::mem::size_of::<RawInputDevice>() as u32,
+                );
+                dbg(&format!("raw input hwnd={hwnd} registered={ok}"));
+            } else {
+                dbg("raw input 窗口创建失败");
+            }
+        } else {
+            dbg("RegisterClassEx 失败");
+        }
+
         INSTALLED.store(true, Ordering::Relaxed);
         let mut msg: Msg = std::mem::zeroed();
-        while GetMessageW(&mut msg, 0, 0, 0) > 0 {}
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+            // 必须派发：WM_INPUT 是通过窗口过程送给我们的
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
         UnhookWindowsHookEx(hook);
         if kb != 0 {
             UnhookWindowsHookEx(kb);
@@ -550,7 +700,9 @@ unsafe extern "system" fn hook_proc(code: i32, w: usize, l: isize) -> isize {
     {
         use crate::macros as m;
         match msg {
-            WM_MOUSEMOVE => m::push_move(info.pt.x, info.pt.y),
+            // 移动改由 Raw Input 记录相对增量（见 raw_wndproc），
+            // 这里不再用 LL 钩子的绝对坐标：游戏里光标被锁定，坐标是无效的。
+            WM_MOUSEMOVE => {}
             WM_LBUTTONDOWN => m::push_mouse(m::BTN_LEFT, true),
             WM_LBUTTONUP => m::push_mouse(m::BTN_LEFT, false),
             WM_RBUTTONDOWN => m::push_mouse(m::BTN_RIGHT, true),

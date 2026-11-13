@@ -759,61 +759,8 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // 窗口有焦点时按键可能到不了全局钩子 —— 录制热键在这里兜底
-        if self.macro_record_hotkey != 0 && !crate::macros::is_playing() {
-            let key = self.macro_record_hotkey;
-            let need_mods = self.macro_record_mods;
-            let (hit, focused_now, keys_seen) = ctx.input(|i| {
-                let mut hit = false;
-                let mut seen: Vec<u8> = Vec::new();
-                for e in &i.events {
-                    if let egui::Event::Key { key: k, pressed: true, .. } = e {
-                        if let Some(vk) = crate::macros::egui_key_vk(*k) {
-                            seen.push(vk);
-                            if vk == key {
-                                hit = true;
-                            }
-                        }
-                    }
-                }
-                let mut mods = 0u8;
-                if i.modifiers.ctrl {
-                    mods |= crate::macros::MOD_CTRL;
-                }
-                if i.modifiers.shift {
-                    mods |= crate::macros::MOD_SHIFT;
-                }
-                if i.modifiers.alt {
-                    mods |= crate::macros::MOD_ALT;
-                }
-                if i.modifiers.mac_cmd || i.modifiers.command {
-                    mods |= crate::macros::MOD_WIN;
-                }
-                (hit && mods == need_mods, i.focused, seen)
-            });
-            if !keys_seen.is_empty() {
-                crate::hook::debug_log(&format!(
-                    "update keys={:02X?} focused={} rec_key=0x{key:02X} hit={}",
-                    keys_seen, focused_now, hit
-                ));
-            }
-            if hit {
-                if crate::macros::is_recording() {
-                    if let Some(r) = crate::macros::stop_recording() {
-                        self.macro_recording = false;
-                        let (events, origin) = r;
-                        self.finish_recording(events, origin);
-                        let n = self.macros.len();
-                        let now = ctx.input(|i| i.time);
-                        self.toast(format!("已保存第 {} 个宏", n), true, now);
-                    }
-                } else {
-                    crate::macros::start_recording(self.macro_track_moves);
-                    self.macro_recording = true;
-                }
-            }
-        }
-
+        // 录制热键只走全局钩子这一条路：
+        // 之前在 egui 里也做了一次切换，两条路会互相打架（一条开、一条立刻关）。
         // 热键录制结束：把结果落成宏
         if let Some((events, origin)) = crate::macros::take_finished() {
             self.macro_recording = false;

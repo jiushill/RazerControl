@@ -553,6 +553,31 @@ pub fn push_wheel(delta: i32) {
     append(Ev::wheel(delta));
 }
 /// 鼠标移动（绝对坐标；回放时按模式换算）
+/// 相对位移事件（Raw Input 录下来的 dx/dy）：a=1 标记，c=dx，b=dy
+pub fn push_move_rel(dx: i32, dy: i32) {
+    if dx == 0 && dy == 0 {
+        return;
+    }
+    if let Ok(mut g) = REC.lock() {
+        if let Some(r) = g.as_mut() {
+            if !r.track_moves {
+                return;
+            }
+            let now = Instant::now();
+            let dt = now.duration_since(r.last).as_millis().min(60_000) as u32;
+            r.last = now;
+            r.events.push(Ev::delay(dt));
+            r.events.push(Ev {
+                kind: T_MOUSE_MOVE,
+                a: 1,
+                b: dy,
+                c: dx,
+                text: String::new(),
+            });
+        }
+    }
+}
+
 pub fn push_move(x: i32, y: i32) {
     if let Ok(mut g) = REC.lock() {
         if let Some(r) = g.as_mut() {
@@ -1067,6 +1092,10 @@ fn play_inner(m: &Macro, speed: f32, depth: u32) {
                     T_WHEEL => inject_mouse(MOUSEEVENTF_WHEEL, e.a as u32, 0, 0),
                     T_MOUSE_MOVE => match p.move_mode {
                         MoveMode::None => {}
+                        // Raw Input 录制的相对增量：原样注入（游戏 raw input 直接生效）
+                        _ if e.a == 1 => {
+                            inject_mouse(MOUSEEVENTF_MOVE, 0, e.c, e.b);
+                        }
                         _ => {
                             let (px, py) = prev.unwrap_or_else(|| {
                                 let mut cur = (0i32, 0i32);
@@ -1250,6 +1279,9 @@ pub fn ev_label(e: &Ev) -> String {
     }
     if e.kind == T_KEYPRESS {
         return format!("{} 按键", sc_name(e.a.max(0) as u16));
+    }
+    if e.kind == T_MOUSE_MOVE && e.a == 1 {
+        return format!("移动 ({}, {})", e.c, e.b);
     }
     if e.kind == T_LOOP_START {
         return format!("循环 {} 次", e.a.max(1));
