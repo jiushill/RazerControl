@@ -1680,7 +1680,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rz-app"
-version = "1.0.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui",
@@ -1690,14 +1690,14 @@ dependencies = [
 
 [[package]]
 name = "rz-cli"
-version = "1.0.0"
+version = "0.2.0"
 dependencies = [
  "rz-core",
 ]
 
 [[package]]
 name = "rz-core"
-version = "1.0.0"
+version = "0.2.0"
 
 [[package]]
 name = "same-file"

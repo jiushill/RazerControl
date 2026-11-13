@@ -305,6 +305,37 @@ Synapse 自己的日志里能直接对上（`%LOCALAPPDATA%\Razer\RazerAppEngine
 
 序列宏与分类宏需要多分支结构，当前只实现标准宏（UI 里置灰并标注）。
 
+### 4.6 七类步骤的实现状态
+
+| 步骤 | 数据 | 交互 | 回放 |
+| --- | --- | --- | --- |
+| 延迟 | `kind=0`，`a`=毫秒 | 行内拖秒数 | 按「延迟设置」换算（录制/固定/随机/无） |
+| 键盘功能 | `kind=6`，`a`=扫描码 | 点「选择键」后按一个键 | `KEYEVENTF_SCANCODE` 按下+抬起 |
+| 鼠标功能 | `kind=5`，`a`=动作码 | 行内下拉（10 个动作，见 4.5） | 单击/双击/中键/侧键/横向滚动 |
+| 文本功能 | `kind=7`，text | 弹窗编辑，上限 250 字 | **一律 `KEYEVENTF_UNICODE`**（绕过输入法） |
+| 启动 | `kind=8`，`a`=0程序/1网站 | 程序带「浏览…」，两框互不填充 | `ShellExecuteW("open", …)` |
+| 运行命令 | `kind=9`，text | 行内输入框 | `cmd /C <命令>`（`raw_arg`，不弹黑框） |
+| 宏 | `kind=10`，text=宏名 | 行内下拉选其它宏 | 递归执行，深度上限 8 层 |
+| 循环 | `kind=11/12` | 「循环」包裹全部步骤，次数行内可改 | 索引遍历 + 循环栈，支持嵌套 |
+
+### 4.7 鼠标移动：为什么必须用 Raw Input
+
+录游戏（CS2 等 `m_rawinput 1`）时，**光标是被锁定的**，读 `MSLLHOOKSTRUCT.pt` 只会得到一串钉死的坐标
+（实测全是 `(1436, 26)`）。所以移动改由 Raw Input 采集：
+
+```rust
+RegisterRawInputDevices(RIDEV_INPUTSINK) → WM_INPUT → RAWMOUSE.lLastX / lLastY
+```
+
+事件存为**相对增量**（`kind=3` 且 `a=1`，`b=dy`、`c=dx`），回放直接
+`SendInput(MOUSEEVENTF_MOVE, dx, dy)` —— 游戏 raw input 认这个，而 `SetCursorPos`
+在游戏里完全无效（只挪桌面光标）。
+
+> 压枪类宏的命中率依赖 **DPI + 游戏 sensitivity + m_yaw/m_pitch + 分辨率** 与录制时完全一致，
+> 任一参数变化轨迹都会偏，这是所有软件宏的共性。
+
+
+
 存储是纯文本，与上面的 events 一一对应：
 
 ```text
