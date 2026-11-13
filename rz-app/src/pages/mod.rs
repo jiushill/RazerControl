@@ -1386,6 +1386,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                 app.macro_sel = Some(i);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::ghost_button(ui, &app.ty, "回放").clicked() {
+                    if let Some(i) = app.macro_sel {
+                        if let Some(m) = app.macros.get(i).cloned() {
+                            crate::macros::play(&m, app.macro_speed);
+                        }
+                    }
+                }
                 if widgets::ghost_button(ui, &app.ty, "删除").clicked() {
                     if let Some(i) = app.macro_sel {
                         app.macros.remove(i);
@@ -1452,6 +1459,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
     let mut add_launch = false;
     let mut add_run = false;
     let mut add_macro_ref = false;
+    let mut add_loop = false;
     let mut undo = false;
     let mut redo = false;
     let mut save = false;
@@ -1554,11 +1562,13 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                     if ui.button("宏").clicked() {
                         add_macro_ref = true;
                     }
-                    ui.add_enabled_ui(false, |ui| {
-                        let _ = ui.button("循环");
-                    })
-                    .response
-                    .on_hover_text("循环暂未实现");
+                    if ui
+                        .button("循环")
+                        .on_hover_text("把当前所有步骤包进循环（次数可在行内改）")
+                        .clicked()
+                    {
+                        add_loop = true;
+                    }
                 });
                 ui.add_space(10.0);
                 let _ = ui.separator();
@@ -1642,6 +1652,7 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                 M::T_LAUNCH => ("启", ACCENT),
                                 M::T_RUN => ("令", INFO),
                                 M::T_MACRO => ("M", ACCENT),
+                                M::T_LOOP_START | M::T_LOOP_END => ("循", WARN),
                                 _ => ("移", MUTED),
                             };
                             let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
@@ -1680,6 +1691,35 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
                                         }
                                     }
                                 });
+                            } else if evs[j].kind == M::T_LOOP_START && !app.macro_recording {
+                                ui.label(
+                                    egui::RichText::new("循环")
+                                        .font(app.ty.small.clone())
+                                        .color(MUTED),
+                                );
+                                let mut times = evs[j].a.max(1);
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut times)
+                                            .speed(0.2)
+                                            .range(1..=999),
+                                    )
+                                    .changed()
+                                {
+                                    evs[j].a = times.max(1);
+                                    changed = true;
+                                }
+                                ui.label(
+                                    egui::RichText::new("次（以下步骤重复执行）")
+                                        .font(app.ty.tiny.clone())
+                                        .color(MUTED),
+                                );
+                            } else if evs[j].kind == M::T_LOOP_END && !app.macro_recording {
+                                ui.label(
+                                    egui::RichText::new("循环结束")
+                                        .font(app.ty.small.clone())
+                                        .color(MUTED),
+                                );
                             } else if evs[j].kind == M::T_MACRO && !app.macro_recording {
                                 // 雷云：宏 + 选择宏下拉
                                 ui.label(
@@ -1874,6 +1914,18 @@ pub fn macros(app: &mut App, ui: &mut Ui) {
             app.macros[i].events.push(M::Ev::delay(50));
             app.macros[i].events.push(M::Ev::run(""));
             app.save_macros();
+        }
+        if add_loop {
+            let n = app.macros[i].events.len();
+            if n == 0 {
+                let now = ui.input(|i| i.time);
+                app.toast("先添加步骤，再插入循环".into(), false, now);
+            } else {
+                app.push_macro_undo(i);
+                app.macros[i].events.insert(0, M::Ev::loop_start(2));
+                app.macros[i].events.push(M::Ev::loop_end());
+                app.save_macros();
+            }
         }
         if add_macro_ref {
             app.push_macro_undo(i);

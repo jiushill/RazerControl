@@ -45,6 +45,10 @@ pub const LAUNCH_URL: i32 = 1;
 pub const T_RUN: u8 = 9;
 /// 宏步骤（雷云「宏」= 宏套宏）：text = 被引用宏的名字
 pub const T_MACRO: u8 = 10;
+/// 循环区间开始（a = 重复次数）；与 T_LOOP_END 成对出现
+pub const T_LOOP_START: u8 = 11;
+/// 循环区间结束
+pub const T_LOOP_END: u8 = 12;
 /// 雷云的文本上限
 pub const TEXT_MAX: usize = 250;
 
@@ -131,6 +135,21 @@ impl Ev {
         Ev {
             kind: T_ACTION,
             a: code,
+            ..Default::default()
+        }
+    }
+    /// 循环开始（次数存在 a，至少 1）
+    pub fn loop_start(times: u32) -> Self {
+        Ev {
+            kind: T_LOOP_START,
+            a: times.max(1) as i32,
+            ..Default::default()
+        }
+    }
+    /// 循环结束
+    pub fn loop_end() -> Self {
+        Ev {
+            kind: T_LOOP_END,
             ..Default::default()
         }
     }
@@ -959,8 +978,38 @@ fn play_inner(m: &Macro, speed: f32, depth: u32) {
             prev = Some(cur);
         }
 
-        for e in evs {
-            if ev_disabled(&e) {
+        // 索引式遍历（为了支持「循环开始/结束」区间跳转）
+        let mut i = 0usize;
+        let mut loops: Vec<(usize, u32)> = Vec::new();
+        while i < evs.len() {
+            let e = &evs[i];
+            match e.kind {
+                T_LOOP_START => {
+                    let n = e.a.max(1) as u32;
+                    if n > 1 {
+                        loops.push((i, n - 1));
+                    }
+                    i += 1;
+                    continue;
+                }
+                T_LOOP_END => {
+                    if let Some((start, rem)) = loops.last_mut() {
+                        if *rem > 0 {
+                            *rem -= 1;
+                            crate::hook::debug_log(&format!("loop rewind, rem={}", *rem));
+                            let s = *start;
+                            i = s + 1;
+                            continue;
+                        }
+                        loops.pop();
+                    }
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            if ev_disabled(e) {
+                i += 1;
                 continue;
             }
             unsafe {
@@ -1050,6 +1099,7 @@ fn play_inner(m: &Macro, speed: f32, depth: u32) {
                     _ => {}
                 }
             }
+            i += 1;
         }
         if depth == 0 {
             let mut p = playing_lock();
@@ -1209,6 +1259,12 @@ pub fn ev_label(e: &Ev) -> String {
     }
     if e.kind == T_KEYPRESS {
         return format!("{} 按键", sc_name(e.a.max(0) as u16));
+    }
+    if e.kind == T_LOOP_START {
+        return format!("循环 {} 次", e.a.max(1));
+    }
+    if e.kind == T_LOOP_END {
+        return "循环结束".to_string();
     }
     if e.kind == T_MACRO {
         let n = if e.text.is_empty() {
